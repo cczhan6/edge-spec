@@ -1,0 +1,28 @@
+devices:
+  device-0:
+    uplink_mbps: 60
+    downlink_mbps: 120
+    rtt_ms: 25
+    jitter_ms: 3
+    bandwidth_jitter_ratio: 0.30
+    rtt_jitter_ms: 8
+    congestion_probability: 0.06
+    congestion_slowdown: 2.0
+  device-1:
+    uplink_mbps: 60
+    downlink_mbps: 120
+    rtt_ms: 25
+    jitter_ms: 3
+    bandwidth_jitter_ratio: 0.30
+    rtt_jitter_ms: 8
+    congestion_probability: 0.06
+    congestion_slowdown: 2.0
+  device-2:
+    uplink_mbps: 60
+    downlink_mbps: 120
+    rtt_ms: 25
+    jitter_ms: 3
+    bandwidth_jitter_ratio: 0.30
+    rtt_jitter_ms: 8
+    congestion_probability: 0.06
+    congestion_slowdown: 2.0
