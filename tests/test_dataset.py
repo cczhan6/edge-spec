@@ -2,12 +2,47 @@ import unittest
 
 from edge_spec.dataset import (
     iter_microbatches,
+    load_specbench,
     select_one_per_category_per_device,
+    select_one_per_category,
 )
 from edge_spec.types import SpecBenchItem
 
 
 class DatasetSelectionTests(unittest.TestCase):
+    def test_load_specbench_maps_raw_categories_to_six_task_groups(self):
+        items = load_specbench("data/spec_bench/question.jsonl")
+        categories = {item.category for item in items}
+        self.assertEqual(categories, {"Sum", "Math", "MT", "QA", "RAG", "Trans"})
+        counts = {category: 0 for category in categories}
+        for item in items:
+            counts[item.category] += 1
+        self.assertEqual(counts, {
+            "Sum": 80,
+            "Math": 80,
+            "MT": 80,
+            "QA": 80,
+            "RAG": 80,
+            "Trans": 80,
+        })
+
+    def test_one_per_category_uses_six_task_groups(self):
+        items = load_specbench("data/spec_bench/question.jsonl")
+        selected = select_one_per_category(items)
+        self.assertEqual([item.category for item in selected], [
+            "Sum",
+            "Math",
+            "MT",
+            "QA",
+            "RAG",
+            "Trans",
+        ])
+
+    def test_load_specbench_filters_one_six_task_group(self):
+        items = load_specbench("data/spec_bench/question.jsonl", category="translation")
+        self.assertEqual(len(items), 80)
+        self.assertEqual({item.category for item in items}, {"Trans"})
+
     def test_one_per_category_per_device_keeps_category_batches(self):
         items = [
             SpecBenchItem(f"a-{index}", f"prompt {index}", category="a")

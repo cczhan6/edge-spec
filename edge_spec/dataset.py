@@ -7,6 +7,79 @@ from typing import Iterable
 
 from .types import SpecBenchItem
 
+SPECBENCH_SIX_CATEGORIES = ("Sum", "Math", "MT", "QA", "RAG", "Trans")
+
+SPECBENCH_RAW_TO_SIX = {
+    "summarization": "Sum",
+    "math_reasoning": "Math",
+    "writing": "MT",
+    "roleplay": "MT",
+    "reasoning": "MT",
+    "math": "MT",
+    "coding": "MT",
+    "extraction": "MT",
+    "stem": "MT",
+    "humanities": "MT",
+    "qa": "QA",
+    "rag": "RAG",
+    "translation": "Trans",
+}
+
+SPECBENCH_CATEGORY_ALIASES = {
+    "sum": "Sum",
+    "summarization": "Sum",
+    "math": "Math",
+    "math reasoning": "Math",
+    "math_reasoning": "Math",
+    "mt": "MT",
+    "writing": "MT",
+    "roleplay": "MT",
+    "reasoning": "MT",
+    "coding": "MT",
+    "extraction": "MT",
+    "stem": "MT",
+    "humanities": "MT",
+    "multi-turn dialogue": "MT",
+    "multi-turn conversation": "MT",
+    "multi_turn_dialogue": "MT",
+    "multi_turn_conversation": "MT",
+    "qa": "QA",
+    "question answering": "QA",
+    "question_answering": "QA",
+    "rag": "RAG",
+    "retrieval-augmented generation": "RAG",
+    "retrieval_augmented_generation": "RAG",
+    "trans": "Trans",
+    "translation": "Trans",
+    "machine translation": "Trans",
+    "machine_translation": "Trans",
+}
+
+
+def specbench_six_category(category: str) -> str:
+    return SPECBENCH_RAW_TO_SIX.get(category.strip().casefold(), category)
+
+
+def normalize_specbench_category(category: str) -> str:
+    return SPECBENCH_CATEGORY_ALIASES.get(category.strip().casefold(), category)
+
+
+def sort_specbench_categories(categories: Iterable[str]) -> list[str]:
+    ordered_categories = list(dict.fromkeys(categories))
+    six_order = {
+        category: index for index, category in enumerate(SPECBENCH_SIX_CATEGORIES)
+    }
+    original_order = {
+        category: index for index, category in enumerate(ordered_categories)
+    }
+    return sorted(
+        ordered_categories,
+        key=lambda category: (
+            six_order.get(category, len(six_order)),
+            original_order[category],
+        ),
+    )
+
 
 def _first_text(value) -> str:
     if isinstance(value, str):
@@ -49,8 +122,9 @@ def load_specbench(
             if not line:
                 continue
             raw = json.loads(line)
-            item_category = str(raw.get("category") or raw.get("task") or "unknown")
-            if category and item_category != category:
+            raw_category = str(raw.get("category") or raw.get("task") or "unknown")
+            item_category = specbench_six_category(raw_category)
+            if category and item_category != normalize_specbench_category(category):
                 continue
             turns = raw.get("turns")
             if not isinstance(turns, list):
@@ -101,7 +175,7 @@ def select_one_per_category(items: Iterable[SpecBenchItem]) -> list[SpecBenchIte
     for item in items:
         if item.category not in selected:
             selected[item.category] = item
-    return list(selected.values())
+    return [selected[category] for category in sort_specbench_categories(selected)]
 
 
 def select_one_per_category_per_device(
@@ -113,7 +187,8 @@ def select_one_per_category_per_device(
         grouped.setdefault(item.category, []).append(item)
 
     selected: list[SpecBenchItem] = []
-    for category, category_items in grouped.items():
+    for category in sort_specbench_categories(grouped):
+        category_items = grouped[category]
         if len(category_items) < device_count:
             raise ValueError(
                 f"category {category!r} has {len(category_items)} samples, "

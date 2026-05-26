@@ -6,11 +6,14 @@ from pathlib import Path
 
 from .backends import FakeBackend, HuggingFaceBackend
 from .dataset import (
+    SPECBENCH_SIX_CATEGORIES,
     fallback_items,
     iter_microbatches,
     load_specbench,
+    normalize_specbench_category,
     select_one_per_category,
     select_one_per_category_per_device,
+    sort_specbench_categories,
 )
 from .io import write_json, write_jsonl
 from .runner import HeteroAsyncPipelineRunner, HeteroSyncRunner
@@ -44,7 +47,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-config", default="configs/edge_hetero.yaml")
     parser.add_argument("--results-dir", default=os.environ.get("RESULTS_DIR", "results"))
     parser.add_argument("--limit", type=int, default=3)
-    parser.add_argument("--category", default=None)
+    parser.add_argument(
+        "--category",
+        default=os.environ.get("CATEGORY"),
+        help=(
+            "Run only one SpecBench six-task group. Supported values: "
+            f"{', '.join(SPECBENCH_SIX_CATEGORIES)}. Can also be set via CATEGORY."
+        ),
+    )
     parser.add_argument(
         "--dataset-mode",
         choices=(
@@ -56,21 +66,24 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("DATASET_MODE", "limit"),
         help=(
             "Dataset selection mode. 'one-per-category' samples one request from "
-            "each category; 'all' runs every selected request without dropping "
-            "the final partial microbatch."
+            "each SpecBench six-task group; 'all' runs every selected request "
+            "without dropping the final partial microbatch."
         ),
     )
     parser.add_argument(
         "--one-per-category",
         action="store_true",
-        help="Evaluate one SpecBench sample from each category. Ignores the default --limit=3.",
+        help=(
+            "Evaluate one SpecBench sample from each six-task group. "
+            "Ignores the default --limit=3."
+        ),
     )
     parser.add_argument(
         "--one-per-category-per-device",
         action="store_true",
         help=(
-            "Evaluate one sample per device from each SpecBench category. "
-            "Each category becomes one 3-request microbatch."
+            "Evaluate one sample per device from each SpecBench six-task group. "
+            "Each task group becomes one 3-request microbatch."
         ),
     )
     parser.add_argument("--shuffle", action="store_true")
@@ -137,7 +150,8 @@ def print_task_metrics(summary: dict) -> None:
     print(
         "task                 requests  eff_recv_tok/s  e2e_ttft_s  e2e_mean_latency_s"
     )
-    for task, metrics in sorted(task_metrics.items()):
+    for task in sort_specbench_categories(task_metrics):
+        metrics = task_metrics[task]
         ttft = metrics.get("e2e_first_token_latency_s")
         ttft_text = f"{ttft:.4f}" if ttft is not None else "n/a"
         print(
@@ -174,6 +188,10 @@ def main() -> None:
     sampling.validate()
     profiles = load_device_profiles(args.profile_config)
 
+    category_filter = (
+        normalize_specbench_category(args.category) if args.category else None
+    )
+
     try:
         full_dataset_mode = dataset_mode in {
             "one-per-category",
@@ -183,7 +201,7 @@ def main() -> None:
         items = load_specbench(
             args.dataset_path,
             limit=None if full_dataset_mode else args.limit,
-            category=args.category,
+            category=category_filter,
             shuffle=args.shuffle,
             seed=args.seed,
         )
@@ -191,6 +209,12 @@ def main() -> None:
         if not args.use_fake_models:
             raise
         items = fallback_items()
+    if category_filter and not items:
+        raise ValueError(
+            f"no requests found for category {args.category!r} "
+            f"(normalized to {category_filter!r}); supported categories: "
+            f"{', '.join(SPECBENCH_SIX_CATEGORIES)}"
+        )
     if dataset_mode == "one-per-category":
         items = select_one_per_category(items)
     if dataset_mode == "one-per-category-per-device":
@@ -241,6 +265,7 @@ def main() -> None:
             progress.close()
     summary["dataset_selection"] = {
         "dataset_path": args.dataset_path,
+        "category": category_filter,
         "dataset_mode": dataset_mode,
         "one_per_category": dataset_mode == "one-per-category",
         "one_per_category_per_device": dataset_mode == "one-per-category-per-device",
@@ -249,7 +274,7 @@ def main() -> None:
         "request_count": run_request_count,
         "dropped_request_count": dropped_request_count,
         "microbatch_count": len(microbatches),
-        "categories": sorted({item.category for item in items}),
+        "categories": sort_specbench_categories({item.category for item in items}),
     }
     summary["run_config"] = {
         "mode": args.mode,

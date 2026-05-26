@@ -24,11 +24,22 @@ python -m edge_spec.run --mode async --pipeline-count 3 --use-fake-models --max-
 
 ## 同步 baseline
 
+默认运行命令：
+
 ```bash
 bash scripts/run_qwen25_specbench.sh
 ```
 
-默认脚本使用 `DATASET_MODE=all`：运行全部选中样本，不丢弃最后不足 3 条的尾部样本。
+选择类别时，在命令前加 `CATEGORY=...`：
+
+```bash
+CATEGORY=Sum bash scripts/run_qwen25_specbench.sh
+CATEGORY=Math bash scripts/run_qwen25_specbench.sh
+```
+
+不指定 `CATEGORY` 时默认跑 `Sum`。可选类别为 `Sum`、`Math`、`MT`、`QA`、`RAG`、`Trans`。
+脚本默认使用 `DATASET_MODE=all`，同步结果按类别写入 `results/sync/<CATEGORY>/`，
+例如 `results/sync/Sum/`。
 
 可以随时切换数据集使用方式：
 
@@ -37,26 +48,34 @@ DATASET_MODE=one-per-category bash scripts/run_qwen25_specbench.sh
 DATASET_MODE=all bash scripts/run_qwen25_specbench.sh
 ```
 
-- `one-per-category`：每类 1 条。
-- `all`：跑所有选中样本，不丢弃任何样本；最后一个 microbatch 可以少于 3 条。
-
-同步结果默认写入 `results/sync/`。
+- `one-per-category`：当前类别取 1 条；直接调用 CLI 且不传 `--category` 时为每个 SpecBench 六类任务 1 条。
+- `all`：跑当前类别下所有选中样本，不丢弃任何样本；最后一个 microbatch 可以少于 3 条。
 
 ## 异步多流水方案
 
+默认运行命令：
+
 ```bash
 bash scripts/run_qwen25_specbench_async.sh
+```
+
+选择类别时，同样在命令前加 `CATEGORY=...`：
+
+```bash
+CATEGORY=Sum bash scripts/run_qwen25_specbench_async.sh
+CATEGORY=RAG bash scripts/run_qwen25_specbench_async.sh
 ```
 
 异步脚本使用 `--mode async --pipeline-count 3`。也可以用环境变量调整流水线数量：
 
 ```bash
 PIPELINE_COUNT=2 bash scripts/run_qwen25_specbench_async.sh
+CATEGORY=RAG PIPELINE_COUNT=2 bash scripts/run_qwen25_specbench_async.sh
 ```
 
 异步模式仍复用同一组端侧 draft 模型、target 模型、数据选择和网络 profile，因此可以和同步 baseline 直接比较 `summary.json` 里的吞吐、延迟、接受率和网络指标。异步 trace 中会额外记录 `pipeline_id`、`pipeline_queue_wait_s`、`pipeline_start_s`、`pipeline_finish_s`，summary 中会额外记录流水线利用率和队列等待。
 
-异步结果默认写入 `results/async/`。两个脚本都支持用 `RESULTS_DIR` 覆盖输出目录：
+异步结果默认按类别写入 `results/async/<CATEGORY>/`。两个脚本都支持用 `RESULTS_DIR` 覆盖输出目录：
 
 ```bash
 RESULTS_DIR=results/sync_run_1 bash scripts/run_qwen25_specbench.sh
@@ -72,7 +91,9 @@ python -m edge_spec.run --mode async --no-progress
 如果 Hugging Face 权重下载进度长时间不动，通常是代理连接中断。脚本默认设置了
 `HF_HUB_DISABLE_XET=1`，中断后重跑即可从已有缓存续传。
 
-当前 `question.jsonl` 应为 480 条、13 个类别。`DATASET_MODE=all` 会运行全部 480 条。
+当前 `question.jsonl` 应为 480 条。原始 13 个 category 会归并为 SpecBench 六类任务：
+`Sum`、`Math`、`MT`、`QA`、`RAG`、`Trans`。脚本默认每次只跑一个类别；
+如果直接调用 CLI 且不传 `--category`，`DATASET_MODE=all` 会运行全部 480 条。
 
 默认模型：
 
