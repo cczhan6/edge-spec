@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from edge_spec.simulation import (
+    SeededNetworkTrace,
     barrier_waits,
     load_device_profiles,
     network_delay_s,
@@ -23,6 +24,30 @@ class SimulationTests(unittest.TestCase):
         self.assertAlmostEqual(waits["a"], 0.5)
         self.assertAlmostEqual(waits["b"], 0.0)
         self.assertAlmostEqual(waits["c"], 0.3)
+
+    def test_seeded_network_trace_replays_time_slots(self):
+        profile = DeviceProfile(
+            "device-0",
+            20,
+            50,
+            40,
+            3,
+            bandwidth_jitter_ratio=0.2,
+            rtt_jitter_ms=5,
+            congestion_probability=0.5,
+            congestion_slowdown=2.0,
+        )
+        trace = SeededNetworkTrace(seed=7, time_slot_s=0.1)
+        first = trace.sample(1_000, profile, "uplink", 0.04)
+        same_slot = trace.sample(1_000, profile, "uplink", 0.09)
+        different_seed = SeededNetworkTrace(seed=8, time_slot_s=0.1).sample(
+            1_000, profile, "uplink", 0.04
+        )
+        different_slot = trace.sample(1_000, profile, "uplink", 0.11)
+
+        self.assertEqual(first, same_slot)
+        self.assertNotEqual(first, different_seed)
+        self.assertNotEqual(first, different_slot)
 
     def test_congestion_changes_effective_network(self):
         profile = DeviceProfile(

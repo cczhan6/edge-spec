@@ -12,9 +12,11 @@
   - 公式: len(records)。
 
 - round_count
-  - sync 模式: 总同步轮次数。
-  - async 模式: 总验证事件数 (进入流水线的 draft packet 数)。
-  - 公式: len(round_trace)。
+  - event_trace.jsonl 的行数。
+  - sync_batch 方法: 总同步轮次数。
+  - proposed 方法: 包含真实 verifier lane 验证事件, 也包含 stale/drop 等无 target forward 的 trace 事件。
+  - target_only 方法: 0, 因为没有 draft verification trace。
+  - 如果只关心 proposed 的真实 target verification, 看 verification_event_count 和 lane_verification_count。
 
 - total_generated_tokens
   - 所有请求实际输出的 token 数总和。
@@ -22,8 +24,9 @@
 
 - total_virtual_time_s
   - 整次实验的虚拟总耗时, 单位秒。
-  - sync 模式: 所有 microbatch 串行执行后的完成时间。
-  - async 模式: 所有设备请求队列全部完成时的最大完成时间。
+  - sync_batch 方法: 所有 microbatch 串行执行后的完成时间。
+  - proposed 方法: 所有设备请求队列全部完成时的最大完成时间。
+  - target_only 方法: 所有 target-only microbatch 串行执行后的完成时间。
 
 - throughput_tokens_per_s
   - 全局吞吐, 单位 token/s。
@@ -32,11 +35,20 @@
 
 ### speculative decoding 质量
 
+target_only 不执行 speculative decoding, 因此 acceptance 相关字段为 null。
+
 - mean_acceptance_rate
   - 请求级 acceptance rate 的平均值。
   - 单请求公式: accepted_draft_tokens / proposed_draft_tokens。
-  - 汇总公式: mean(record.acceptance_rate)。
+  - 汇总公式: mean(record.acceptance_rate), 只统计 proposed_draft_tokens > 0 的请求。
+  - target_only 下为 null。
   - 含义: draft token 被 target 接受的比例。
+
+- overall_acceptance_rate
+  - token 加权 acceptance rate。
+  - 公式: sum(accepted_draft_tokens) / sum(proposed_draft_tokens)。
+  - target_only 下为 null。
+  - 与 mean_acceptance_rate 的区别: 该字段不会让很短请求和很长请求拥有相同权重。
 
 ### barrier 与同步开销
 
@@ -52,54 +64,63 @@
 - slowest_device_rounds
   - 每个设备成为本轮最慢到达设备的次数。
   - 实现上取 barrier_wait_s 最小的设备, 因为最慢设备的等待时间为 0。
-  - async 模式没有全局 barrier, 该字段为空对象。
+  - proposed 方法没有全局 barrier, 该字段为空对象。
 
 ### 异步流水线指标
 
-以下字段只在 --mode async 下有明确含义。
+以下字段只在 `--method proposed` 下有明确含义。sync_batch 和 target_only 不使用 verifier lane。
 
-- mode
-  - 运行模式, 异步方案为 "async"。
+- method
+  - 运行方法, 取值为 `proposed`, `sync_batch` 或 `target_only`。
 
-- pipeline_count
+- lane_count
   - 边缘侧验证流水线数量。
 
 - verification_event_count
-  - 异步验证事件数。
-  - 公式: len(round_trace)。
+  - proposed 中真实触发 target forward 的 lane-local micro-batch 次数。
+  - 公式: count(event_trace row where target_batch_size > 0)。
 
-- pipeline_verification_count
-  - 所有流水线处理过的 draft packet 总数。
+- lane_verification_count
+  - 所有 verifier lane 处理过的 draft segment 总数。
+  - 与 verification_event_count 的区别: 一个 micro-batch 事件可能包含多个 draft segment。
 
-- mean_pipeline_queue_wait_s
-  - draft packet 到达边缘后, 在流水线前排队的平均时间。
-  - 公式: mean(pipeline_queue_wait_s)。
+- mean_lane_queue_wait_s
+  - draft packet 到达边缘后, 在 verifier lane 前排队的平均时间。
+  - 公式: mean(device.lane_queue_wait_s), 按实际验证的 draft segment 加权, 不是按 event_trace 行加权。
 
-- pipeline_queue_wait_fraction
-  - 流水线排队等待在"排队等待 + target forward"中的占比。
-  - 公式: sum(pipeline_queue_wait_s) / (sum(pipeline_queue_wait_s) + sum(target_forward_s))。
+- lane_queue_wait_fraction
+  - verifier lane 排队等待在"排队等待 + target forward"中的占比。
+  - 公式: sum(segment_queue_wait_s) / (sum(segment_queue_wait_s) + sum(segment_target_forward_s))。
+  - 当一个 lane-local micro-batch 中包含多个 segment 时, target_forward_s 会按 segment 计入该比例, 使不同 batch size 下可比。
 
-- pipeline_busy_s
+- mean_lane_batch_size
+  - 每次 lane-local target verification 的平均 batch size。
+  - 公式: sum(target_batch_size) / verification_event_count。
+
+- lane_busy_s
   - 每条流水线累计执行 target verification 的时间。
 
-- pipeline_verifications
+- lane_verifications
   - 每条流水线处理的 draft packet 数。
 
-- pipeline_utilization
+- lane_utilization
   - 每条流水线利用率。
-  - 公式: pipeline_busy_s[pipeline] / total_virtual_time_s。
+  - 公式: lane_busy_s[lane] / total_virtual_time_s。
 
-- mean_pipeline_utilization
+- mean_lane_utilization
   - 所有流水线平均利用率。
-  - 公式: sum(pipeline_busy_s) / (pipeline_count * total_virtual_time_s)。
+  - 公式: sum(lane_busy_s) / (lane_count * total_virtual_time_s)。
 
 ### 网络指标
+
+网络动态采样由 `run_config.network_seed` 和 `run_config.network_trace_slot_s` 控制。同一 `network_seed + device_id + direction + virtual_time_slot` 会 replay 同一网络状态, 其中 `virtual_time_slot = floor(virtual_time_s / network_trace_slot_s)`。
 
 - mean_uplink_effective_mbps
   - 所有上行传输采样后的有效带宽均值, 单位 Mbps。
 
 - mean_downlink_effective_mbps
-  - 所有下行传输采样后的有效带宽均值, 单位 Mbps。
+  - 所有真实发生的下行传输采样后的有效带宽均值, 单位 Mbps。
+  - stale/discarded draft segment 没有下行传输, 不计入该均值。
 
 - mean_uplink_effective_rtt_ms
   - 所有上行传输采样后的有效 RTT 均值, 单位毫秒。
@@ -111,15 +132,31 @@
   - 上行和下行发生拥塞的总次数。
 
 - network_congestion_fraction
-  - 网络样本中的拥塞比例。
+  - 真实网络传输样本中的拥塞比例。
+  - target_only 没有 event_trace, 该字段从 request_records.jsonl 中的 target_only 上下行采样字段汇总。
   - 公式: network_congestion_events / network_samples, 其中 network_samples = 2 * 设备轮次样本数。
+
+### 运行配置
+
+- run_config.method
+  - 运行方法, 取值为 `proposed`, `sync_batch` 或 `target_only`。
+
+- run_config.seed
+  - 实验主 seed。用于数据 shuffle、模型采样和 speculative verification 中的随机过程。
+
+- run_config.network_seed
+  - 动态网络 trace 的 seed。正式对比中, target_only、sync_batch 和 proposed 应使用相同的 `network_seed`。
+
+- run_config.network_trace_slot_s
+  - 网络 replay 的时间片长度, 单位秒。时间片越小, 网络状态随虚拟时间变化越细; 时间片越大, 相邻传输更容易共享同一网络状态。
 
 ### target-only 对比
 
 - mean_target_only_latency_s
   - target-only 端到端 baseline 的请求级平均延迟, 单位秒。
   - 单请求公式: target_only_uplink_s + target_only_model_latency_s + target_only_downlink_s。
-  - 仅在启用 target baseline 时存在; 否则为 null。
+  - `target_only` 下等于该方法自身的平均请求延迟。proposed 和 sync_batch 不再内嵌 target-only baseline, 因此该字段为 null。
+  - 正式表格应以单独运行的 `--method target_only` 作为公共 AR baseline。
 
 - mean_speedup_vs_target_only
   - 请求级 speedup 的平均值。
@@ -189,7 +226,7 @@
   - microbatch_count: microbatch 数。
   - categories: 选中的六类任务标签。
 
-## 2. 请求级指标: specbench_sync_hetero.jsonl
+## 2. 请求级指标: request_records.jsonl
 
 每一行是一条请求的记录。
 
@@ -226,6 +263,7 @@
 - acceptance_rate
   - draft token 接受率。
   - 公式: accepted_draft_tokens / proposed_draft_tokens。
+  - target_only 下为 null。
 
 - accepted_draft_tokens
   - 被 target 接受的 draft token 数。
@@ -234,20 +272,20 @@
   - draft 模型提出的 token 数。
 
 - sync_rounds
-  - sync 模式: 该请求参与的同步轮数。
-  - async 模式: 该请求完成的验证轮数。
+  - sync_batch 方法: 该请求参与的同步轮数。
+  - proposed 方法: 该请求完成的验证轮数。
 
 - execution_mode
-  - 请求来自同步 baseline 还是异步方案, 取值为 sync 或 async。
+  - 请求所属方法, 取值为 `proposed`, `sync_batch` 或 `target_only`。
 
 - async_rounds
-  - 异步模式下该请求的验证轮数。
+  - proposed 方法下该请求的验证轮数。
 
-- pipeline_ids
-  - 异步模式下该请求每轮使用的流水线 ID 序列。
+- lane_ids
+  - proposed 方法下该请求每轮使用的 verifier lane ID 序列。
 
-- pipeline_switches
-  - 异步模式下该请求相邻两轮切换流水线的次数。
+- lane_switches
+  - proposed 方法下该请求相邻两轮切换 verifier lane 的次数。
 
 - first_token_latency_s
   - 首 token 端到端延迟, 单位秒。
@@ -287,9 +325,9 @@
   - 相对 target-only 的加速比。
   - 公式: target_only_latency_s / latency_s。
 
-## 3. 轮次级指标: round_trace.jsonl
+## 3. 事件级指标: event_trace.jsonl
 
-每一行是一轮同步 trace。
+sync_batch 下每一行是一轮同步 trace; proposed 下每一行是一次 verifier lane 验证事件; target_only 下文件为空。
 
 ### 轮次字段
 
@@ -300,8 +338,8 @@
   - microbatch 内的轮次编号, 从 0 开始。
 
 - target_batch_size
-  - sync 模式: 本轮参与 target verification 的活跃请求数。
-  - async 模式: 固定为 1。
+  - sync_batch 方法: 本轮参与 target verification 的活跃请求数。
+  - proposed 方法: 固定为 1。
 
 - barrier_time_s
   - 本轮所有 draft 包到齐的虚拟时间点, 单位秒。
@@ -309,18 +347,18 @@
 - target_forward_s
   - target 模型本轮 batch forward 的真实测量耗时, 单位秒。
 
-- pipeline_id
-  - 异步模式下处理该 draft packet 的流水线 ID。
+- lane_id
+  - proposed 方法下处理该 draft packet 的流水线 ID。
 
-- pipeline_start_s
-  - 异步模式下该 packet 开始验证的虚拟时间点。
+- lane_start_s
+  - proposed 方法下该 packet 开始验证的虚拟时间点。
 
-- pipeline_finish_s
-  - 异步模式下该 packet 完成验证的虚拟时间点。
+- lane_finish_s
+  - proposed 方法下该 packet 完成验证的虚拟时间点。
 
-- pipeline_queue_wait_s
-  - 异步模式下 packet 到达后等待流水线可用的时间。
-  - 公式: pipeline_start_s - arrival_s。
+- lane_queue_wait_s
+  - proposed 方法下 packet 到达后等待流水线可用的时间。
+  - 公式: lane_start_s - arrival_s。
 
 ### devices 内单设备字段
 

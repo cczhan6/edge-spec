@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,32 @@ class NetworkDelaySample:
     serialization_s: float
     jitter_s: float
     congested: bool
+
+
+@dataclass(frozen=True)
+class SeededNetworkTrace:
+    seed: int
+    time_slot_s: float = 0.05
+
+    def __post_init__(self) -> None:
+        if self.time_slot_s <= 0:
+            raise ValueError("time_slot_s must be > 0")
+
+    def sample(
+        self,
+        payload_bytes: int,
+        profile: DeviceProfile,
+        direction: str,
+        time_s: float,
+    ) -> NetworkDelaySample:
+        slot = max(0, int(time_s / self.time_slot_s))
+        rng = random.Random(self._slot_seed(profile.device_id, direction, slot))
+        return sample_network_delay(payload_bytes, profile, direction, rng)
+
+    def _slot_seed(self, device_id: str, direction: str, slot: int) -> int:
+        key = f"{self.seed}:{device_id}:{direction}:{slot}".encode("utf-8")
+        digest = hashlib.sha256(key).digest()
+        return int.from_bytes(digest[:16], "big")
 
 
 def sample_network_delay(

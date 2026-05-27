@@ -16,9 +16,12 @@ from .dataset import (
     sort_specbench_categories,
 )
 from .io import write_json, write_jsonl
-from .runner import HeteroAsyncPipelineRunner, HeteroSyncRunner
+from .methods.base import RunConfig
+from .methods.baselines.sync_batch import SyncBatchRunner
+from .methods.baselines.target_only import TargetOnlyRunner
+from .methods.proposed.async_runtime import ProposedAsyncRunner
 from .simulation import load_device_profiles
-from .types import SamplingConfig
+from .types import SamplingConfig, SpecBenchItem
 
 
 DEFAULT_DRAFT_MODELS = [
@@ -36,12 +39,13 @@ def make_progress(enabled: bool, total: int, desc: str):
         from tqdm.auto import tqdm
     except ImportError:
         return None
-    return tqdm(total=total, desc=desc, unit="req" if desc == "async" else "batch")
+    unit = "req" if desc == "proposed" else "batch"
+    return tqdm(total=total, desc=desc, unit=unit)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Three-edge-device edge speculative decoding experiments."
+        description="Three-device edge speculative decoding experiments."
     )
     parser.add_argument("--dataset-path", default="data/spec_bench/question.jsonl")
     parser.add_argument("--profile-config", default="configs/edge_hetero.yaml")
@@ -93,25 +97,70 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--client-device", default="cuda:0")
     parser.add_argument("--server-device", default="cuda:1")
     parser.add_argument("--torch-dtype", default="auto")
-    parser.add_argument("--gamma", type=int, default=4)
+    gamma_env = os.environ.get("GAMMA")
+    parser.add_argument(
+        "--gamma",
+        type=int,
+        default=int(gamma_env) if gamma_env is not None else None,
+        help=(
+            "Maximum speculative draft length. Defaults to 8 for proposed "
+            "adaptive lookahead and 4 otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--initial-lookahead",
+        type=int,
+        default=int(os.environ.get("INITIAL_LOOKAHEAD", "4")),
+        help="Initial adaptive lookahead before device/request adjustments.",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.8)
     parser.add_argument("--top-k", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--skip-target-baseline", action="store_true")
+    parser.add_argument("--seed", type=int, default=int(os.environ.get("SEED", "42")))
+    network_seed_env = os.environ.get("NETWORK_SEED")
     parser.add_argument(
-        "--mode",
-        choices=("sync", "async"),
-        default="sync",
-        help="Run synchronous barrier baseline or asynchronous multi-pipeline scheme.",
-    )
-    parser.add_argument(
-        "--pipeline-count",
+        "--network-seed",
         type=int,
-        default=3,
-        help="Number of independent verification pipelines used by --mode async.",
+        default=int(network_seed_env) if network_seed_env is not None else None,
+        help="Seed for the dynamic network trace. Defaults to --seed.",
     )
+    parser.add_argument(
+        "--network-trace-slot-s",
+        type=float,
+        default=float(os.environ.get("NETWORK_TRACE_SLOT_S", "0.05")),
+        help="Seconds per deterministic network trace slot.",
+    )
+    parser.add_argument(
+        "--method",
+        choices=("proposed", "sync_batch", "target_only"),
+        default="proposed",
+        help="Experiment method to run.",
+    )
+    parser.add_argument(
+        "--lane-count",
+        type=int,
+        default=int(os.environ.get("LANE_COUNT", "3")),
+        help="Number of independent verifier lanes used by --method proposed.",
+    )
+    parser.add_argument(
+        "--max-inflight-segments",
+        type=int,
+        default=2,
+        help="Maximum unverified draft segments per active request.",
+    )
+    parser.add_argument(
+        "--lookahead-policy",
+        choices=("adaptive", "fixed"),
+        default="adaptive",
+    )
+    parser.add_argument(
+        "--scheduler",
+        choices=("prefix-aware", "queue-only"),
+        default="prefix-aware",
+    )
+    parser.add_argument("--lane-batch-size", type=int, default=2)
+    parser.add_argument("--lane-batch-timeout-s", type=float, default=0.001)
     parser.add_argument(
         "--use-fake-models",
         action="store_true",
@@ -127,19 +176,58 @@ def parse_args() -> argparse.Namespace:
 
 def build_backends(args: argparse.Namespace):
     if args.use_fake_models:
+        target = FakeBackend(args.target_model, seed=9, delay_s=0.001)
+        if args.method == "target_only":
+            return [target for _ in args.draft_models], target
         drafts = [
             FakeBackend(args.draft_models[0], seed=1, delay_s=0.001),
             FakeBackend(args.draft_models[1], seed=3, delay_s=0.001),
             FakeBackend(args.draft_models[2], seed=5, delay_s=0.001),
         ]
-        target = FakeBackend(args.target_model, seed=9, delay_s=0.001)
         return drafts, target
+    target = HuggingFaceBackend(args.target_model, args.server_device, args.torch_dtype)
+    if args.method == "target_only":
+        return [target for _ in args.draft_models], target
     drafts = [
         HuggingFaceBackend(model_name, args.client_device, args.torch_dtype)
         for model_name in args.draft_models
     ]
-    target = HuggingFaceBackend(args.target_model, args.server_device, args.torch_dtype)
     return drafts, target
+
+
+def build_runner(args: argparse.Namespace, draft_backends, target_backend, profiles, sampling):
+    gamma = args.gamma
+    if gamma is None:
+        gamma = 8 if args.method == "proposed" and args.lookahead_policy == "adaptive" else 4
+    config = RunConfig(
+        method=args.method,
+        sampling=sampling,
+        gamma=gamma,
+        initial_lookahead=args.initial_lookahead,
+        max_new_tokens=args.max_new_tokens,
+        seed=args.seed,
+        network_seed=args.network_seed,
+        network_trace_slot_s=args.network_trace_slot_s,
+        lane_count=args.lane_count,
+        max_inflight_segments=args.max_inflight_segments,
+        lookahead_policy=args.lookahead_policy,
+        scheduler=args.scheduler,
+        lane_batch_size=args.lane_batch_size,
+        lane_batch_timeout_s=args.lane_batch_timeout_s,
+    )
+    kwargs = {
+        "draft_backends": draft_backends,
+        "target_backend": target_backend,
+        "profiles": profiles,
+        "config": config,
+    }
+    if args.method == "proposed":
+        return ProposedAsyncRunner(**kwargs)
+    if args.method == "sync_batch":
+        return SyncBatchRunner(**kwargs)
+    if args.method == "target_only":
+        return TargetOnlyRunner(**kwargs)
+    raise ValueError(f"unsupported method: {args.method}")
 
 
 def print_task_metrics(summary: dict) -> None:
@@ -163,8 +251,7 @@ def print_task_metrics(summary: dict) -> None:
         )
 
 
-def main() -> None:
-    args = parse_args()
+def select_dataset(args: argparse.Namespace) -> tuple[list[SpecBenchItem], str, str | None]:
     legacy_modes = [
         args.one_per_category,
         args.one_per_category_per_device,
@@ -176,22 +263,13 @@ def main() -> None:
     dataset_mode = args.dataset_mode
     if any(legacy_modes):
         if args.dataset_mode != "limit":
-            raise ValueError(
-                "Use either --dataset-mode or legacy dataset flags, not both"
-            )
+            raise ValueError("Use either --dataset-mode or legacy dataset flags, not both")
         if args.one_per_category:
             dataset_mode = "one-per-category"
         elif args.one_per_category_per_device:
             dataset_mode = "one-per-category-per-device"
 
-    sampling = SamplingConfig(args.temperature, args.top_p, args.top_k)
-    sampling.validate()
-    profiles = load_device_profiles(args.profile_config)
-
-    category_filter = (
-        normalize_specbench_category(args.category) if args.category else None
-    )
-
+    category_filter = normalize_specbench_category(args.category) if args.category else None
     try:
         full_dataset_mode = dataset_mode in {
             "one-per-category",
@@ -221,6 +299,15 @@ def main() -> None:
         items = select_one_per_category_per_device(
             items, device_count=len(args.draft_models)
         )
+    return items, dataset_mode, category_filter
+
+
+def main() -> None:
+    args = parse_args()
+    sampling = SamplingConfig(args.temperature, args.top_p, args.top_k)
+    sampling.validate()
+    profiles = load_device_profiles(args.profile_config)
+    items, dataset_mode, category_filter = select_dataset(args)
 
     microbatches = list(
         iter_microbatches(
@@ -235,34 +322,22 @@ def main() -> None:
     dropped_request_count = len(items) - run_request_count
 
     draft_backends, target_backend = build_backends(args)
-    runner_kwargs = {
-        "draft_backends": draft_backends,
-        "target_backend": target_backend,
-        "profiles": profiles,
-        "sampling": sampling,
-        "gamma": args.gamma,
-        "max_new_tokens": args.max_new_tokens,
-        "seed": args.seed,
-        "run_target_baseline": not args.skip_target_baseline,
-    }
-    if args.mode == "async":
-        runner = HeteroAsyncPipelineRunner(
-            **runner_kwargs,
-            pipeline_count=args.pipeline_count,
-        )
-    else:
-        runner = HeteroSyncRunner(**runner_kwargs)
-    progress_total = len(items) if args.mode == "async" else len(microbatches)
+    runner = build_runner(args, draft_backends, target_backend, profiles, sampling)
+    progress_total = len(items) if args.method == "proposed" else len(microbatches)
     progress = make_progress(
         enabled=not args.no_progress,
         total=progress_total,
-        desc=args.mode,
+        desc=args.method,
     )
     try:
-        records, traces, summary = runner.run_dataset(microbatches, progress=progress)
+        result = runner.run_dataset(microbatches, progress=progress)
     finally:
         if progress is not None:
             progress.close()
+
+    records = result.records
+    traces = result.traces
+    summary = result.summary
     summary["dataset_selection"] = {
         "dataset_path": args.dataset_path,
         "category": category_filter,
@@ -276,24 +351,14 @@ def main() -> None:
         "microbatch_count": len(microbatches),
         "categories": sort_specbench_categories({item.category for item in items}),
     }
-    summary["run_config"] = {
-        "mode": args.mode,
-        "pipeline_count": args.pipeline_count if args.mode == "async" else None,
-        "gamma": args.gamma,
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "top_k": args.top_k,
-        "seed": args.seed,
-        "skip_target_baseline": args.skip_target_baseline,
-    }
+    summary["run_config"] = runner.run_config_summary()
 
     output_dir = Path(args.results_dir)
-    write_jsonl(output_dir / "specbench_sync_hetero.jsonl", records)
-    write_jsonl(output_dir / "round_trace.jsonl", traces)
+    write_jsonl(output_dir / "request_records.jsonl", records)
+    write_jsonl(output_dir / "event_trace.jsonl", traces)
     write_json(output_dir / "summary.json", summary)
     print(f"wrote {len(records)} request records to {output_dir}")
-    print(f"mode={summary.get('mode', args.mode)}")
+    print(f"method={summary.get('method', args.method)}")
     print(f"throughput_tokens_per_s={summary['throughput_tokens_per_s']:.4f}")
     print_task_metrics(summary)
 
