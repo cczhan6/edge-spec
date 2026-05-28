@@ -236,6 +236,54 @@ class HuggingFaceBackend:
     def decode(self, token_ids: Sequence[int]) -> str:
         return self.tokenizer.decode(list(token_ids), skip_special_tokens=True)
 
+    def _sample_incremental(
+        self,
+        prefix_ids: Sequence[int],
+        max_new_tokens: int,
+        sampling: SamplingConfig,
+        rng: random.Random,
+    ) -> tuple[list[int], list[SparseProb]]:
+        torch = self.torch
+        generated: list[int] = []
+        dists: list[SparseProb] = []
+        if max_new_tokens <= 0:
+            return generated, dists
+
+        input_ids = torch.tensor([list(prefix_ids)], device=self.device, dtype=torch.long)
+        attention_mask = torch.ones_like(input_ids)
+        with torch.inference_mode():
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=True,
+            )
+            past_key_values = outputs.past_key_values
+            for _ in range(max_new_tokens):
+                logits = outputs.logits[0, -1, :]
+                probs = warp_logits_torch(logits, sampling)
+                dist = sparse_from_torch_probs(probs)
+                token_id = sample_from_probs(dist.as_dict(), rng)
+                generated.append(token_id)
+                dists.append(dist)
+                if token_id == self.eos_token_id:
+                    break
+                next_input_ids = torch.tensor(
+                    [[token_id]], device=self.device, dtype=torch.long
+                )
+                attention_mask = torch.ones(
+                    (1, len(prefix_ids) + len(generated)),
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                outputs = self.model(
+                    input_ids=next_input_ids,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+                past_key_values = outputs.past_key_values
+        return generated, dists
+
     def draft(
         self,
         prefix_ids: Sequence[int],
@@ -243,29 +291,9 @@ class HuggingFaceBackend:
         sampling: SamplingConfig,
         rng: random.Random,
     ) -> DraftOutput:
-        torch = self.torch
-        context = list(prefix_ids)
-        draft_ids: list[int] = []
-        dists: list[SparseProb] = []
         self._sync()
         start = time.perf_counter()
-        with torch.inference_mode():
-            for _ in range(gamma):
-                input_ids = torch.tensor([context], device=self.device, dtype=torch.long)
-                attention_mask = torch.ones_like(input_ids)
-                logits = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    use_cache=False,
-                ).logits[0, -1, :]
-                probs = warp_logits_torch(logits, sampling)
-                dist = sparse_from_torch_probs(probs)
-                token_id = sample_from_probs(dist.as_dict(), rng)
-                draft_ids.append(token_id)
-                dists.append(dist)
-                context.append(token_id)
-                if token_id == self.eos_token_id:
-                    break
+        draft_ids, dists = self._sample_incremental(prefix_ids, gamma, sampling, rng)
         self._sync()
         return DraftOutput(draft_ids, dists, time.perf_counter() - start)
 
@@ -317,16 +345,13 @@ class HuggingFaceBackend:
         sampling: SamplingConfig,
         rng: random.Random,
     ) -> tuple[list[int], float]:
-        generated: list[int] = []
-        context = list(prefix_ids)
         self._sync()
         start = time.perf_counter()
-        for _ in range(max_new_tokens):
-            dists, _ = self.target_distributions([context], [[]], sampling)
-            token_id = sample_from_probs(dists[0][0].as_dict(), rng)
-            generated.append(token_id)
-            context.append(token_id)
-            if token_id == self.eos_token_id:
-                break
+        generated, _ = self._sample_incremental(
+            prefix_ids,
+            max_new_tokens,
+            sampling,
+            rng,
+        )
         self._sync()
         return generated, time.perf_counter() - start

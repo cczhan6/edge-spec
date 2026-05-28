@@ -108,13 +108,17 @@ class ProtocolFakeTests(unittest.TestCase):
         result = runner.run_dataset([fallback_items()])
         records, summary = result.records, result.summary
         self.assertEqual(summary["method"], "target_only")
+        self.assertEqual(summary["target_only_server_mode"], "shared_serial")
+        self.assertEqual(len(result.traces), len(records))
         self.assertIsNotNone(summary["mean_target_only_latency_s"])
         for record in records:
             self.assertEqual(record["method"], "target_only")
+            self.assertEqual(record["target_only_server_mode"], "shared_serial")
             self.assertIsNotNone(record["target_only_latency_s"])
             self.assertIsNotNone(record["target_only_model_latency_s"])
             self.assertIsNotNone(record["target_only_uplink_s"])
             self.assertIsNotNone(record["target_only_downlink_s"])
+            self.assertGreaterEqual(record["target_only_queue_wait_s"], 0)
             self.assertGreater(record["target_only_uplink_s"], 0)
             self.assertGreater(record["target_only_downlink_s"], 0)
             self.assertEqual(record["speedup_vs_target_only"], 1.0)
@@ -122,6 +126,15 @@ class ProtocolFakeTests(unittest.TestCase):
                 record["target_only_latency_s"],
                 record["target_only_model_latency_s"],
             )
+        previous_finish_s = 0.0
+        for record in sorted(
+            records, key=lambda item: item["target_only_model_start_s"]
+        ):
+            self.assertGreaterEqual(
+                record["target_only_model_start_s"] + 1e-12,
+                previous_finish_s,
+            )
+            previous_finish_s = record["target_only_model_finish_s"]
 
 
 if __name__ == "__main__":

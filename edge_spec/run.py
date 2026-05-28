@@ -39,7 +39,7 @@ def make_progress(enabled: bool, total: int, desc: str):
         from tqdm.auto import tqdm
     except ImportError:
         return None
-    unit = "req" if desc == "proposed" else "batch"
+    unit = "req" if desc in {"proposed", "target_only"} else "batch"
     return tqdm(total=total, desc=desc, unit=unit)
 
 
@@ -323,7 +323,11 @@ def main() -> None:
 
     draft_backends, target_backend = build_backends(args)
     runner = build_runner(args, draft_backends, target_backend, profiles, sampling)
-    progress_total = len(items) if args.method == "proposed" else len(microbatches)
+    progress_total = (
+        run_request_count
+        if args.method in {"proposed", "target_only"}
+        else len(microbatches)
+    )
     progress = make_progress(
         enabled=not args.no_progress,
         total=progress_total,
