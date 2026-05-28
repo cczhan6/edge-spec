@@ -1,0 +1,112 @@
+{
+  "request_count": 80,
+  "round_count": 2184,
+  "total_generated_tokens": 12110,
+  "total_virtual_time_s": 305.7709906830355,
+  "throughput_tokens_per_s": 39.60480349345277,
+  "mean_acceptance_rate": 0.44992830128807737,
+  "overall_acceptance_rate": 0.43630681818181816,
+  "mean_barrier_wait_s": 0.010884043636453148,
+  "mean_uplink_effective_mbps": 58.18466286519137,
+  "mean_downlink_effective_mbps": 116.90138853216145,
+  "mean_uplink_effective_rtt_ms": 26.470094790492748,
+  "mean_downlink_effective_rtt_ms": 26.388694413652974,
+  "network_congestion_events": 534,
+  "network_congestion_fraction": 0.06009453072248481,
+  "barrier_wait_fraction": 0.1260369964517446,
+  "mean_target_only_latency_s": null,
+  "mean_speedup_vs_target_only": null,
+  "mean_latency_by_device": {
+    "device-0": 8.797862216911644,
+    "device-1": 7.299690295052001,
+    "device-2": 8.32081430061276
+  },
+  "slowest_device_rounds": {
+    "device-0": 464,
+    "device-2": 1364,
+    "device-1": 356
+  },
+  "task_metrics": {
+    "QA": {
+      "request_count": 80,
+      "microbatch_count": 27,
+      "generated_token_count": 12110,
+      "effective_received_token_count": 12110,
+      "effective_duration_s": 305.7709906830355,
+      "microbatch_duration_sum_s": 305.7709906830355,
+      "effective_throughput_tokens_per_s": 39.60480349345277,
+      "effective_received_throughput_tokens_per_s": 39.60480349345277,
+      "e2e_first_token_latency_s": 0.15209991627862107,
+      "e2e_mean_latency_s": 8.137188620486876
+    }
+  },
+  "method": "sync_batch",
+  "profiles": {
+    "device-0": {
+      "device_id": "device-0",
+      "uplink_mbps": 60.0,
+      "downlink_mbps": 120.0,
+      "rtt_ms": 25.0,
+      "jitter_ms": 3.0,
+      "bandwidth_jitter_ratio": 0.3,
+      "rtt_jitter_ms": 8.0,
+      "congestion_probability": 0.06,
+      "congestion_slowdown": 2.0
+    },
+    "device-1": {
+      "device_id": "device-1",
+      "uplink_mbps": 60.0,
+      "downlink_mbps": 120.0,
+      "rtt_ms": 25.0,
+      "jitter_ms": 3.0,
+      "bandwidth_jitter_ratio": 0.3,
+      "rtt_jitter_ms": 8.0,
+      "congestion_probability": 0.06,
+      "congestion_slowdown": 2.0
+    },
+    "device-2": {
+      "device_id": "device-2",
+      "uplink_mbps": 60.0,
+      "downlink_mbps": 120.0,
+      "rtt_ms": 25.0,
+      "jitter_ms": 3.0,
+      "bandwidth_jitter_ratio": 0.3,
+      "rtt_jitter_ms": 8.0,
+      "congestion_probability": 0.06,
+      "congestion_slowdown": 2.0
+    }
+  },
+  "dataset_selection": {
+    "dataset_path": "data/spec_bench/question.jsonl",
+    "category": "QA",
+    "dataset_mode": "all",
+    "one_per_category": false,
+    "one_per_category_per_device": false,
+    "all": true,
+    "selected_request_count": 80,
+    "request_count": 80,
+    "dropped_request_count": 0,
+    "microbatch_count": 27,
+    "categories": [
+      "QA"
+    ]
+  },
+  "run_config": {
+    "method": "sync_batch",
+    "gamma": 4,
+    "initial_lookahead": 4,
+    "max_new_tokens": 256,
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "seed": 42,
+    "network_seed": 42,
+    "network_trace_slot_s": 0.05,
+    "lane_count": 3,
+    "max_inflight_segments": 2,
+    "lookahead_policy": "adaptive",
+    "scheduler": "prefix-aware",
+    "lane_batch_size": 2,
+    "lane_batch_timeout_s": 0.001
+  }
+}

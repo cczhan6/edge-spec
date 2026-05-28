@@ -1,0 +1,130 @@
+{
+  "request_count": 80,
+  "round_count": 9978,
+  "total_generated_tokens": 16292,
+  "total_virtual_time_s": 187.7867917048248,
+  "throughput_tokens_per_s": 86.75796552085943,
+  "mean_acceptance_rate": 0.6792540061385348,
+  "overall_acceptance_rate": 0.6742915496553484,
+  "mean_barrier_wait_s": 0.0,
+  "mean_uplink_effective_mbps": 58.298355064955736,
+  "mean_downlink_effective_mbps": 116.1879146239577,
+  "mean_uplink_effective_rtt_ms": 26.57079600588841,
+  "mean_downlink_effective_rtt_ms": 26.494911091131463,
+  "network_congestion_events": 1020,
+  "network_congestion_fraction": 0.06048745774773172,
+  "barrier_wait_fraction": 0.0,
+  "mean_target_only_latency_s": null,
+  "mean_speedup_vs_target_only": null,
+  "mean_latency_by_device": {
+    "device-1": 6.924138879057137,
+    "device-2": 6.681388856594097,
+    "device-0": 6.955066359437955
+  },
+  "slowest_device_rounds": {},
+  "task_metrics": {
+    "MT": {
+      "request_count": 80,
+      "microbatch_count": 27,
+      "generated_token_count": 16292,
+      "effective_received_token_count": 16292,
+      "effective_duration_s": 187.7867917048248,
+      "microbatch_duration_sum_s": 578.974535720168,
+      "effective_throughput_tokens_per_s": 86.75796552085943,
+      "effective_received_throughput_tokens_per_s": 86.75796552085943,
+      "e2e_first_token_latency_s": 0.160390156963261,
+      "e2e_mean_latency_s": 6.855683146385175
+    }
+  },
+  "lane_count": 3,
+  "verification_event_count": 6885,
+  "lane_verification_count": 6913,
+  "mean_lane_queue_wait_s": 7.273944973594533e-05,
+  "lane_queue_wait_fraction": 0.0023390802975983994,
+  "mean_lane_batch_size": 1.0,
+  "lane_busy_s": {
+    "0": 70.96603864338249,
+    "1": 73.5436151358299,
+    "2": 70.15907394746318
+  },
+  "lane_verifications": {
+    "0": 2245,
+    "1": 2379,
+    "2": 2289
+  },
+  "lane_utilization": {
+    "0": 0.3779075088248561,
+    "1": 0.3916335886468012,
+    "2": 0.37361026997971014
+  },
+  "mean_lane_utilization": 0.38105045581712244,
+  "method": "proposed",
+  "profiles": {
+    "device-0": {
+      "device_id": "device-0",
+      "uplink_mbps": 60.0,
+      "downlink_mbps": 120.0,
+      "rtt_ms": 25.0,
+      "jitter_ms": 3.0,
+      "bandwidth_jitter_ratio": 0.3,
+      "rtt_jitter_ms": 8.0,
+      "congestion_probability": 0.06,
+      "congestion_slowdown": 2.0
+    },
+    "device-1": {
+      "device_id": "device-1",
+      "uplink_mbps": 60.0,
+      "downlink_mbps": 120.0,
+      "rtt_ms": 25.0,
+      "jitter_ms": 3.0,
+      "bandwidth_jitter_ratio": 0.3,
+      "rtt_jitter_ms": 8.0,
+      "congestion_probability": 0.06,
+      "congestion_slowdown": 2.0
+    },
+    "device-2": {
+      "device_id": "device-2",
+      "uplink_mbps": 60.0,
+      "downlink_mbps": 120.0,
+      "rtt_ms": 25.0,
+      "jitter_ms": 3.0,
+      "bandwidth_jitter_ratio": 0.3,
+      "rtt_jitter_ms": 8.0,
+      "congestion_probability": 0.06,
+      "congestion_slowdown": 2.0
+    }
+  },
+  "dataset_selection": {
+    "dataset_path": "data/spec_bench/question.jsonl",
+    "category": "MT",
+    "dataset_mode": "all",
+    "one_per_category": false,
+    "one_per_category_per_device": false,
+    "all": true,
+    "selected_request_count": 80,
+    "request_count": 80,
+    "dropped_request_count": 0,
+    "microbatch_count": 27,
+    "categories": [
+      "MT"
+    ]
+  },
+  "run_config": {
+    "method": "proposed",
+    "gamma": 8,
+    "initial_lookahead": 4,
+    "max_new_tokens": 256,
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "seed": 42,
+    "network_seed": 42,
+    "network_trace_slot_s": 0.05,
+    "lane_count": 3,
+    "max_inflight_segments": 2,
+    "lookahead_policy": "adaptive",
+    "scheduler": "prefix-aware",
+    "lane_batch_size": 1,
+    "lane_batch_timeout_s": 0.0
+  }
+}

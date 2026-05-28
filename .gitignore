@@ -6,9 +6,6 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Results and artifacts
-results/
-
 # OS/editor
 .DS_Store
 .vscode/

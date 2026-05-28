@@ -291,9 +291,29 @@ class HuggingFaceBackend:
         sampling: SamplingConfig,
         rng: random.Random,
     ) -> DraftOutput:
+        torch = self.torch
+        context = list(prefix_ids)
+        draft_ids: list[int] = []
+        dists: list[SparseProb] = []
         self._sync()
         start = time.perf_counter()
-        draft_ids, dists = self._sample_incremental(prefix_ids, gamma, sampling, rng)
+        with torch.inference_mode():
+            for _ in range(gamma):
+                input_ids = torch.tensor([context], device=self.device, dtype=torch.long)
+                attention_mask = torch.ones_like(input_ids)
+                logits = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                ).logits[0, -1, :]
+                probs = warp_logits_torch(logits, sampling)
+                dist = sparse_from_torch_probs(probs)
+                token_id = sample_from_probs(dist.as_dict(), rng)
+                draft_ids.append(token_id)
+                dists.append(dist)
+                context.append(token_id)
+                if token_id == self.eos_token_id:
+                    break
         self._sync()
         return DraftOutput(draft_ids, dists, time.perf_counter() - start)
 
