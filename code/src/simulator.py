@@ -1,0 +1,1566 @@
+from __future__ import annotations
+
+import heapq
+import itertools
+import random
+from typing import Any, Callable, Sequence
+
+from src.communication import network_delay_ms
+from src.config import build_devices
+from src.entities import (
+    ACTIVE_SEGMENT_STATUSES,
+    FINAL_SEGMENT_STATUSES,
+    Device,
+    DeviceRuntime,
+    Request,
+    Segment,
+    SimulationResult,
+    VerifierLane,
+)
+from src.events import Event, EventType
+from src.latency import (
+    AcceptanceWindowEstimator,
+    draft_latency_ms,
+    expected_emitted_tokens,
+    target_only_latency_ms,
+    verify_latency_ms,
+)
+from src.methods import MethodSpec, get_method_spec
+from src.scheduler import LaneScheduler
+from src.model_runner import ModelRunner, SemanticVerifyInput, VerificationResult
+from src.workload import WorkloadItem
+
+
+class Simulator:
+    """Event-driven semantic-in-the-loop simulator with analytical latency."""
+
+    def __init__(
+        self,
+        config: dict[str, Any],
+        model_runner: ModelRunner,
+        workload: Sequence[WorkloadItem],
+        scenario: str,
+        method: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> None:
+        expected_requests = int(config["simulation"]["num_requests"])
+        if len(workload) != expected_requests:
+            raise ValueError(
+                f"workload contains {len(workload)} prompts, expected {expected_requests}"
+            )
+        self.config = config
+        self.model_runner = model_runner
+        self.workload = list(workload)
+        self._progress_callback = progress_callback
+        self.scenario = scenario
+        self.spec: MethodSpec = get_method_spec(method, config)
+        self.devices = build_devices(config, self.spec.device_pool)
+        self.device_runtimes = [DeviceRuntime(device) for device in self.devices]
+        self.requests: list[Request] = []
+        self.segments: list[Segment] = []
+        self.lanes = [VerifierLane(index) for index in range(self.spec.num_lanes)]
+        self.scheduler = LaneScheduler(self.spec.lane_assignment)
+        self.acceptance = AcceptanceWindowEstimator(
+            int(config["speculation"]["acceptance_window_rounds"])
+        )
+        self.events: list[Event] = []
+        self._event_ids = itertools.count()
+        self._rng = random.Random(int(config["simulation"]["seed"]))
+        self._verification_results: dict[int, VerificationResult] = {}
+        self._batch_buffer: list[int] = []
+        self._batch_busy_until_ms = 0.0
+        self._server_only_verify_available_ms = 0.0
+        self._server_only_request_queue: list[int] = []
+        self._server_only_active_request_id: int | None = None
+        self._batch_timeout_token = 0
+        self._batch_timeout_deadline_ms: float | None = None
+        self._batch_flush_token = 0
+        self._batch_flush_deadline_ms: float | None = None
+        self._target_only_available_ms = [0.0]
+        self._batch_waiting_time_ms = 0.0
+        self._phase_waiting_time_ms = 0.0
+        self._lane_queue_wait_times_ms: list[float] = []
+        self._trace: list[dict[str, Any]] = []
+        self._last_specedge_verify_ms = self._initial_specedge_verify_ms()
+        self._pipeline_idle_bubble_ms = 0.0
+
+    def run(self) -> SimulationResult:
+        self._schedule_request_arrivals()
+        while self.events or self._batch_buffer:
+            if not self.events:
+                if not self._maybe_start_batch(self._batch_flush_time_ms(), force=True):
+                    break
+                continue
+            event = heapq.heappop(self.events)
+            self._dispatch(event)
+        unfinished = [
+            request.request_id
+            for request in self.requests
+            if request.status != "finished"
+        ]
+        if unfinished:
+            raise RuntimeError(f"simulation ended with unfinished requests: {unfinished}")
+        return SimulationResult(
+            method=self.spec.name,
+            scenario=self.scenario,
+            requests=self.requests,
+            segments=self.segments,
+            devices=self.device_runtimes,
+            lanes=self.lanes,
+            batch_waiting_time_ms=self._batch_waiting_time_ms,
+            phase_waiting_time_ms=self._phase_waiting_time_ms,
+            lane_queue_wait_times_ms=self._lane_queue_wait_times_ms,
+            event_trace=self._trace,
+        )
+
+    def _batch_flush_time_ms(self) -> float:
+        buffered_arrivals = [
+            float(self.segments[item].edge_arrival_time_ms)
+            for item in self._batch_buffer
+            if self.segments[item].edge_arrival_time_ms is not None
+        ]
+        return max([self._batch_busy_until_ms, *buffered_arrivals], default=self._batch_busy_until_ms)
+
+    def predict_verify_latency_ms(self, gamma: int) -> float:
+        return verify_latency_ms(self.config["edge"], [gamma])
+
+    def _is_specedge_runtime(self) -> bool:
+        return self.spec.runtime in {"specedge", "server_only_specedge"}
+
+    def _is_server_only_runtime(self) -> bool:
+        return self.spec.runtime == "server_only_specedge"
+
+    def _allows_out_of_order_verify(self) -> bool:
+        return self.spec.runtime == "async"
+
+    def _has_fixed_speculation_window(self) -> bool:
+        return self.spec.window_size > 0
+
+    def _global_batch_size(self) -> int:
+        if self._is_specedge_runtime():
+            batch_size = self.config["specedge"].get("server_batch_size")
+            if batch_size is None:
+                batch_size = 1
+            return int(batch_size)
+        return int(self.config["sync_batch"]["B_global"])
+
+    def _global_batch_timeout_ms(self) -> float | None:
+        if self._is_specedge_runtime():
+            timeout_ms = self.config["specedge"].get("server_batch_timeout_ms")
+            if timeout_ms is None:
+                return None
+            return float(timeout_ms)
+        return float(self.config["sync_batch"]["global_batch_timeout_ms"])
+
+    def _specedge_max_beam_len(self) -> int:
+        return int(self.config["specedge"]["max_beam_len"])
+
+    def _specedge_proactive_type(self) -> str:
+        return str(self.config["specedge"].get("proactive_type", "excluded"))
+
+    def _specedge_proactive_enabled(self) -> bool:
+        return (
+            bool(self.config["specedge"].get("proactive_enabled", True))
+            and self._specedge_proactive_type() != "disabled"
+        )
+
+    def _specedge_server_batch_type(self) -> str:
+        return str(self.config["specedge"].get("server_batch_type", "static"))
+
+    def _uses_specedge_dynamic_batch(self) -> bool:
+        return self._is_specedge_runtime() and self._specedge_server_batch_type() == "dynamic"
+
+    def _initial_specedge_verify_ms(self) -> float:
+        if not self._is_specedge_runtime():
+            return 0.0
+        batch_size = max(1, self._global_batch_size())
+        budget = self._specedge_max_beam_len()
+        return verify_latency_ms(self.config["edge"], [budget for _ in range(batch_size)])
+
+    def _specedge_tree_budget_nodes(self, beam_len: int) -> int:
+        return max(1, beam_len)
+
+    def _segment_payload_tokens(self, segment: Segment) -> int:
+        if self._is_specedge_runtime():
+            return segment.tree_budget_nodes
+        return segment.gamma
+
+    def _verify_latency_for_segments(self, segments: Sequence[Segment]) -> float:
+        if self._is_specedge_runtime():
+            return verify_latency_ms(self.config["edge"], [segment.tree_budget_nodes for segment in segments])
+        return verify_latency_ms(self.config["edge"], [segment.verify_gamma for segment in segments])
+
+    def _server_only_draft_latency_ms(self, token_count: int) -> float:
+        if token_count <= 0:
+            return 0.0
+        server_only = self.config.get("server_only", {})
+        startup_ms = float(
+            server_only.get("draft_startup_ms", self.config["edge"]["verify_startup_ms"])
+        )
+        token_rate = float(
+            server_only.get("draft_token_rate_tok_s", self.config["edge"]["target_only_token_rate_tok_s"])
+        )
+        return startup_ms + (
+            1000.0 * token_count / token_rate
+        )
+
+    def _server_only_drafter_profile(self) -> str:
+        return str(self.config.get("server_only", {}).get("drafter_profile", "medium"))
+
+    def _server_only_acceptance_prior(self) -> float:
+        profile = self._server_only_drafter_profile()
+        return float(self.config["drafter_profiles"][profile]["acceptance_prior"])
+
+    def _dispatch(self, event: Event) -> None:
+        handlers = {
+            EventType.REQUEST_ARRIVE: self._on_request_arrive,
+            EventType.TARGET_ONLY_ARRIVE_EDGE: self._on_target_only_arrive_edge,
+            EventType.SERVER_ONLY_ARRIVE_EDGE: self._on_server_only_arrive_edge,
+            EventType.SERVER_ONLY_DRAFT_DONE: self._on_server_only_draft_done,
+            EventType.SERVER_ONLY_VERIFY_DONE: self._on_server_only_verify_done,
+            EventType.DRAFT_DONE: self._on_draft_done,
+            EventType.PROACTIVE_DRAFT_DONE: self._on_proactive_draft_done,
+            EventType.PACKET_ARRIVE_EDGE: self._on_packet_arrive_edge,
+            EventType.VERIFY_DONE: self._on_verify_done,
+            EventType.BATCH_FLUSH: self._on_batch_flush,
+            EventType.BATCH_TIMEOUT: self._on_batch_timeout,
+            EventType.BATCH_VERIFY_DONE: self._on_batch_verify_done,
+            EventType.RESULT_ARRIVE_DEVICE: self._on_result_arrive_device,
+            EventType.REQUEST_FINISH: self._on_request_finish,
+        }
+        handlers[event.event_type](event.time_ms, event.payload)
+
+    def _schedule(self, time_ms: float, event_type: EventType, payload: Any = None) -> None:
+        heapq.heappush(self.events, Event(time_ms, next(self._event_ids), event_type, payload))
+
+    def _schedule_request_arrivals(self) -> None:
+        simulation = self.config["simulation"]
+        current_ms = 0.0
+        for request_id, item in enumerate(self.workload):
+            if request_id and simulation["request_arrival"] == "poisson":
+                rate = float(simulation["poisson_rate_per_s"])
+                current_ms += self._rng.expovariate(rate) * 1000.0
+            prompt_ids = self.model_runner.encode_prompt(item.prompt)
+            request = Request(
+                request_id=request_id,
+                device_id=request_id % len(self.devices),
+                output_len=int(self._rng.choice(simulation["output_len_choices"])),
+                start_time_ms=current_ms,
+                prompt_id=item.prompt_id,
+                category=item.category,
+                category_group=item.category_group,
+                prompt=item.prompt,
+                prompt_token_count=len(prompt_ids),
+                prompt_ids=prompt_ids,
+            )
+            self.requests.append(request)
+            self.device_runtimes[request.device_id].assigned_requests += 1
+            self._schedule(current_ms, EventType.REQUEST_ARRIVE, request_id)
+
+    def _on_request_arrive(self, now_ms: float, request_id: int) -> None:
+        request = self.requests[request_id]
+        if self._is_server_only_runtime():
+            payload_bytes = self._payload_bytes(request.prompt_token_count)
+            delay_ms = self._network_delay_ms(
+                self.devices[request.device_id],
+                "uplink",
+                f"server-only:{request_id}",
+                payload_bytes,
+            )
+            request.target_only_uplink_payload_bytes = payload_bytes
+            request.target_only_uplink_ms = delay_ms
+            self._trace.append(
+                {
+                    "event": "server_only_request_uplink",
+                    "method": self.spec.name,
+                    "request_id": request_id,
+                    "device_id": request.device_id,
+                    "start_time_ms": now_ms,
+                    "finish_time_ms": now_ms + delay_ms,
+                    "uplink_ms": delay_ms,
+                    "uplink_payload_bytes": payload_bytes,
+                }
+            )
+            self._schedule(now_ms + delay_ms, EventType.SERVER_ONLY_ARRIVE_EDGE, request_id)
+            return
+        if self.spec.runtime != "target_only":
+            self._refresh_drafting(request, now_ms)
+            return
+        payload_bytes = self._payload_bytes(request.prompt_token_count)
+        delay_ms = self._network_delay_ms(
+            self.devices[request.device_id],
+            "uplink",
+            f"target-only:{request_id}",
+            payload_bytes,
+        )
+        request.target_only_uplink_payload_bytes = payload_bytes
+        request.target_only_uplink_ms = delay_ms
+        self._schedule(now_ms + delay_ms, EventType.TARGET_ONLY_ARRIVE_EDGE, request_id)
+
+    def _on_target_only_arrive_edge(self, now_ms: float, request_id: int) -> None:
+        request = self.requests[request_id]
+        generated_ids = self.model_runner.target_only(request.prompt_ids, request.output_len)
+        compute_ms = target_only_latency_ms(self.config["edge"], len(generated_ids))
+        lane_id = min(
+            range(len(self._target_only_available_ms)),
+            key=self._target_only_available_ms.__getitem__,
+        )
+        start_ms = max(now_ms, self._target_only_available_ms[lane_id])
+        finish_ms = start_ms + compute_ms
+        self._target_only_available_ms[lane_id] = finish_ms
+        payload_bytes = self._payload_bytes(len(generated_ids))
+        delay_ms = self._network_delay_ms(
+            self.devices[request.device_id],
+            "downlink",
+            f"target-only:{request_id}",
+            payload_bytes,
+        )
+        request.generated_ids = generated_ids
+        request.edge_generated_ids = generated_ids.copy()
+        request.target_only_queue_wait_ms = start_ms - now_ms
+        request.target_only_compute_ms = compute_ms
+        request.target_only_downlink_payload_bytes = payload_bytes
+        request.target_only_downlink_ms = delay_ms
+        request.first_token_time_ms = finish_ms + delay_ms if generated_ids else None
+        self._trace.append(
+            {
+                "event": "target_only_service",
+                "method": self.spec.name,
+                "request_id": request_id,
+                "device_id": request.device_id,
+                "lane_id": lane_id,
+                "batch_size": 1,
+                "start_time_ms": start_ms,
+                "finish_time_ms": finish_ms,
+                "compute_ms": compute_ms,
+                "uplink_ms": request.target_only_uplink_ms,
+                "uplink_payload_bytes": request.target_only_uplink_payload_bytes,
+                "downlink_ms": delay_ms,
+                "downlink_payload_bytes": payload_bytes,
+            }
+        )
+        self._schedule(finish_ms + delay_ms, EventType.REQUEST_FINISH, request_id)
+
+    def _on_server_only_arrive_edge(self, now_ms: float, request_id: int) -> None:
+        self._enqueue_server_only_request(self.requests[request_id], now_ms)
+
+    def _enqueue_server_only_request(self, request: Request, now_ms: float) -> None:
+        if request.status != "running":
+            return
+        if (
+            self._server_only_active_request_id != request.request_id
+            and request.request_id not in self._server_only_request_queue
+        ):
+            self._server_only_request_queue.append(request.request_id)
+        self._maybe_start_server_only_request(now_ms)
+
+    def _maybe_start_server_only_request(self, now_ms: float) -> None:
+        if not self._is_server_only_runtime() or self._server_only_active_request_id is not None:
+            return
+        while self._server_only_request_queue:
+            request_id = self._server_only_request_queue.pop(0)
+            request = self.requests[request_id]
+            if request.status != "running":
+                continue
+            self._server_only_active_request_id = request_id
+            self._start_server_only_draft(request, now_ms)
+            return
+
+    def _start_server_only_draft(self, request: Request, now_ms: float) -> None:
+        if self._is_server_only_runtime():
+            if self._server_only_active_request_id is None:
+                self._server_only_active_request_id = request.request_id
+            elif self._server_only_active_request_id != request.request_id:
+                return
+        if request.status != "running" or request.completed_results:
+            return
+        remaining = request.output_len - request.committed_pos
+        if remaining <= 0:
+            self._schedule(now_ms, EventType.REQUEST_FINISH, request.request_id)
+            return
+        device = self.devices[request.device_id]
+        prefix_ids = request.prompt_ids + request.generated_ids
+        gamma = min(
+            self._select_gamma(request, device, now_ms, remaining),
+            self._specedge_max_beam_len(),
+            remaining,
+        )
+        drafter_profile = self._server_only_drafter_profile()
+        draft_ids = self.model_runner.draft(drafter_profile, prefix_ids, gamma)
+        if not draft_ids:
+            raise RuntimeError("semantic drafter returned an empty server_only segment")
+        draft_ms = self._server_only_draft_latency_ms(len(draft_ids))
+        segment = Segment(
+            segment_id=len(self.segments),
+            request_id=request.request_id,
+            device_id=request.device_id,
+            draft_model=f"server_only:{drafter_profile}",
+            prefix_version=request.prefix_version,
+            base_pos=request.committed_pos,
+            scheduled_gamma=len(draft_ids),
+            prefix_ids=prefix_ids,
+            draft_ids=draft_ids,
+            create_time_ms=now_ms,
+            draft_start_time_ms=now_ms,
+            draft_compute_ms=draft_ms,
+            draft_analytical_ms=draft_ms,
+            tree_budget_nodes=len(draft_ids),
+            beam_len=len(draft_ids),
+        )
+        self.segments.append(segment)
+        request.pending_segments[segment.base_pos] = segment.segment_id
+        request.in_flight_segments.append(segment.segment_id)
+        runtime = self.device_runtimes[request.device_id]
+        runtime.generated_draft_tokens += len(draft_ids)
+        runtime.selected_gammas.append(len(draft_ids))
+        self._trace.append(
+            {
+                "event": "server_only_draft",
+                "method": self.spec.name,
+                "request_id": request.request_id,
+                "segment_id": segment.segment_id,
+                "device_id": request.device_id,
+                "draft_model": segment.draft_model,
+                "scheduled_gamma": segment.scheduled_gamma,
+                "verify_gamma": segment.verify_gamma,
+                "batch_size": 1,
+                "start_time_ms": now_ms,
+                "finish_time_ms": now_ms + draft_ms,
+                "compute_ms": draft_ms,
+                "tree_budget_nodes": segment.tree_budget_nodes,
+            }
+        )
+        self._schedule(now_ms + draft_ms, EventType.SERVER_ONLY_DRAFT_DONE, segment.segment_id)
+
+    def _on_server_only_draft_done(self, now_ms: float, segment_id: int) -> None:
+        segment = self.segments[segment_id]
+        request = self.requests[segment.request_id]
+        if (
+            segment.status != "drafting"
+            or request.status != "running"
+            or request.pending_segments.get(segment.base_pos) != segment_id
+        ):
+            if segment.status not in FINAL_SEGMENT_STATUSES:
+                self._stale_segment(segment)
+            return
+        segment.status = "queued"
+        segment.edge_arrival_time_ms = now_ms
+        self._start_server_only_verify(segment, now_ms)
+
+    def _start_server_only_verify(self, segment: Segment, now_ms: float) -> None:
+        request = self.requests[segment.request_id]
+        if (
+            segment.status != "queued"
+            or request.status != "running"
+            or request.pending_segments.get(segment.base_pos) != segment.segment_id
+            or segment.base_pos != request.edge_frontier_pos
+        ):
+            if segment.status not in FINAL_SEGMENT_STATUSES:
+                self._stale_segment(segment)
+            return
+        result = self.model_runner.verify(segment.prefix_ids, segment.draft_ids)
+        duration_ms = self._verify_latency_for_segments([segment])
+        start_ms = max(now_ms, self._server_only_verify_available_ms)
+        finish_ms = start_ms + duration_ms
+        self._server_only_verify_available_ms = finish_ms
+        self._verification_results[segment.segment_id] = result
+        segment.status = "verifying"
+        segment.verify_start_time_ms = start_ms
+        segment.verify_done_time_ms = finish_ms
+        segment.verify_compute_ms = duration_ms
+        self._schedule(finish_ms, EventType.SERVER_ONLY_VERIFY_DONE, segment.segment_id)
+        self._trace.append(
+            {
+                "event": "server_only_verify",
+                "method": self.spec.name,
+                "segment_id": segment.segment_id,
+                "request_id": segment.request_id,
+                "device_id": segment.device_id,
+                "draft_model": segment.draft_model,
+                "scheduled_gamma": segment.scheduled_gamma,
+                "verify_gamma": segment.verify_gamma,
+                "batch_size": 1,
+                "start_time_ms": start_ms,
+                "finish_time_ms": finish_ms,
+                "compute_ms": duration_ms,
+                "queue_wait_ms": start_ms - now_ms,
+                "tree_budget_nodes": segment.tree_budget_nodes,
+            }
+        )
+
+    def _on_server_only_verify_done(self, now_ms: float, segment_id: int) -> None:
+        segment = self.segments[segment_id]
+        if segment.status != "verifying":
+            return
+        self._resolve_verification(
+            segment,
+            self._verification_results.pop(segment_id),
+            now_ms,
+        )
+
+    def _refresh_drafting(self, request: Request, now_ms: float) -> None:
+        if not self._can_queue_draft(request):
+            return
+        runtime = self.device_runtimes[request.device_id]
+        request.draft_queued = True
+        request.draft_queue_enter_ms = now_ms
+        runtime.draft_queue.append(request.request_id)
+        request.max_outstanding_observed = max(
+            request.max_outstanding_observed,
+            request.outstanding_count,
+        )
+        self._try_start_device(runtime, now_ms)
+
+    def _can_queue_draft(self, request: Request) -> bool:
+        if (
+            request.status != "running"
+            or request.draft_queued
+            or request.completed_results
+            or (
+                self._has_fixed_speculation_window()
+                and request.outstanding_count >= self.spec.window_size
+            )
+        ):
+            return False
+        prefix_ids, speculative_count, blocked = self._draft_prefix(request)
+        if blocked:
+            return False
+        if self.model_runner.eos_token_id is not None and prefix_ids[-1] == self.model_runner.eos_token_id:
+            return False
+        return request.committed_pos + speculative_count < request.output_len
+
+    def _try_start_device(self, runtime: DeviceRuntime, now_ms: float) -> None:
+        if runtime.active_segment_id is not None:
+            return
+        while runtime.draft_queue:
+            request = self.requests[runtime.draft_queue.pop(0)]
+            queued_at = float(request.draft_queue_enter_ms or now_ms)
+            request.draft_queued = False
+            request.draft_queue_enter_ms = None
+            if not self._can_start_draft(request):
+                continue
+            self._start_draft(runtime, request, now_ms, queued_at)
+            return
+
+    def _can_start_draft(self, request: Request) -> bool:
+        if (
+            request.status != "running"
+            or request.completed_results
+            or (
+                self._has_fixed_speculation_window()
+                and len(request.in_flight_segments) >= self.spec.window_size
+            )
+        ):
+            return False
+        prefix_ids, speculative_count, blocked = self._draft_prefix(request)
+        if blocked:
+            return False
+        if self.model_runner.eos_token_id is not None and prefix_ids[-1] == self.model_runner.eos_token_id:
+            return False
+        return request.committed_pos + speculative_count < request.output_len
+
+    def _start_draft(
+        self,
+        runtime: DeviceRuntime,
+        request: Request,
+        now_ms: float,
+        queued_at_ms: float,
+    ) -> None:
+        prefix_ids, speculative_count, blocked = self._draft_prefix(request)
+        if blocked:
+            return
+        remaining = request.output_len - request.committed_pos - speculative_count
+        gamma = self._select_gamma(request, runtime.device, now_ms, remaining)
+        if self.spec.runtime == "specedge":
+            gamma = min(gamma, self._specedge_max_beam_len())
+        use_proactive = bool(
+            self.spec.runtime == "specedge"
+            and request.proactive_draft_ids
+            and request.proactive_base_pos == request.committed_pos + speculative_count
+            and request.proactive_prefix_version == request.prefix_version
+        )
+        retained_proactive_ids: list[int] = []
+        if use_proactive:
+            retained_limit = min(
+                len(request.proactive_draft_ids),
+                remaining,
+                int(self.config["specedge"]["max_budget"]),
+            )
+            retained_proactive_ids = request.proactive_draft_ids[:retained_limit]
+            self._clear_proactive(request)
+            if self._specedge_proactive_type() == "included":
+                fresh_budget = max(0, gamma - int(self.config["specedge"]["proactive_max_beam_len"]))
+            else:
+                fresh_budget = gamma
+            fresh_budget = min(
+                fresh_budget,
+                remaining - len(retained_proactive_ids),
+                int(self.config["specedge"]["max_budget"]) - len(retained_proactive_ids),
+            )
+            fresh_ids = (
+                self.model_runner.draft(
+                    runtime.device.drafter_profile,
+                    prefix_ids + retained_proactive_ids,
+                    fresh_budget,
+                )
+                if fresh_budget > 0
+                else []
+            )
+            draft_ids = retained_proactive_ids + fresh_ids
+        else:
+            self._clear_proactive(request)
+            draft_ids = self.model_runner.draft(runtime.device.drafter_profile, prefix_ids, gamma)
+            fresh_ids = draft_ids
+        if not draft_ids:
+            raise RuntimeError("semantic drafter returned an empty segment")
+        analytical_ms = draft_latency_ms(runtime.device, len(draft_ids))
+        fresh_compute_ms = draft_latency_ms(runtime.device, len(fresh_ids)) if fresh_ids else 0.0
+        duration_ms = (
+            fresh_compute_ms
+            if use_proactive
+            else max(0.0, analytical_ms - request.overlap_credit_ms)
+        )
+        request.overlap_credit_ms = max(0.0, request.overlap_credit_ms - analytical_ms)
+        beam_len = len(draft_ids)
+        tree_budget_nodes = (
+            self._specedge_tree_budget_nodes(beam_len)
+            if self.spec.runtime == "specedge"
+            else beam_len
+        )
+        pipeline_target_ms = 0.0
+        pipeline_edge_cycle_ms = 0.0
+        pipeline_alignment_error_ms = 0.0
+        if self.spec.runtime == "specedge":
+            alpha = self.acceptance.estimate(request.request_id, runtime.device.acceptance_prior)
+            pipeline_target_ms = self._specedge_pipeline_target_ms(now_ms)
+            network_cycle_ms = self._specedge_edge_cycle_ms(
+                runtime.device,
+                beam_len,
+                expected_emitted_tokens(alpha, beam_len),
+            ) - draft_latency_ms(runtime.device, beam_len)
+            pipeline_edge_cycle_ms = duration_ms + network_cycle_ms
+            pipeline_alignment_error_ms = abs(pipeline_target_ms - pipeline_edge_cycle_ms)
+        segment = Segment(
+            segment_id=len(self.segments),
+            request_id=request.request_id,
+            device_id=request.device_id,
+            draft_model=runtime.device.drafter_profile,
+            prefix_version=request.prefix_version,
+            base_pos=request.committed_pos + speculative_count,
+            scheduled_gamma=beam_len,
+            prefix_ids=prefix_ids,
+            draft_ids=draft_ids,
+            create_time_ms=now_ms,
+            draft_start_time_ms=now_ms,
+            draft_queue_wait_ms=now_ms - queued_at_ms,
+            draft_compute_ms=duration_ms,
+            draft_analytical_ms=analytical_ms,
+            tree_budget_nodes=tree_budget_nodes,
+            beam_len=beam_len,
+            proactive_used=use_proactive,
+            pipeline_target_ms=pipeline_target_ms,
+            pipeline_edge_cycle_ms=pipeline_edge_cycle_ms,
+            pipeline_alignment_error_ms=pipeline_alignment_error_ms,
+        )
+        self.segments.append(segment)
+        request.pending_segments[segment.base_pos] = segment.segment_id
+        request.in_flight_segments.append(segment.segment_id)
+        request.max_outstanding_observed = max(
+            request.max_outstanding_observed,
+            request.outstanding_count,
+        )
+        runtime.active_segment_id = segment.segment_id
+        runtime.busy_until_ms = now_ms + duration_ms
+        runtime.total_queue_wait_ms += segment.draft_queue_wait_ms
+        runtime.total_busy_time_ms += duration_ms
+        runtime.generated_draft_tokens += len(draft_ids)
+        runtime.selected_gammas.append(beam_len)
+        self._trace.append(
+            {
+                "event": "draft_compute",
+                "method": self.spec.name,
+                "request_id": request.request_id,
+                "segment_id": segment.segment_id,
+                "device_id": request.device_id,
+                "draft_model": segment.draft_model,
+                "scheduled_gamma": beam_len,
+                "verify_gamma": segment.verify_gamma,
+                "batch_size": 1,
+                "start_time_ms": now_ms,
+                "finish_time_ms": now_ms + duration_ms,
+                "compute_ms": duration_ms,
+                "queue_wait_ms": segment.draft_queue_wait_ms,
+                "tree_budget_nodes": segment.tree_budget_nodes,
+                "pipeline_target_ms": pipeline_target_ms,
+                "pipeline_edge_cycle_ms": pipeline_edge_cycle_ms,
+                "pipeline_alignment_error_ms": pipeline_alignment_error_ms,
+                "proactive_used": use_proactive,
+                "proactive_reused_tokens": len(retained_proactive_ids),
+            }
+        )
+        if self.spec.runtime == "specedge":
+            self._trace.append(
+                {
+                    "event": "pipeline_schedule",
+                    "method": self.spec.name,
+                    "request_id": request.request_id,
+                    "segment_id": segment.segment_id,
+                    "device_id": request.device_id,
+                    "draft_model": segment.draft_model,
+                    "scheduled_gamma": beam_len,
+                    "verify_gamma": segment.verify_gamma,
+                    "batch_size": 1,
+                    "start_time_ms": now_ms,
+                    "finish_time_ms": now_ms + duration_ms,
+                    "compute_ms": duration_ms,
+                    "tree_budget_nodes": segment.tree_budget_nodes,
+                    "pipeline_target_ms": pipeline_target_ms,
+                    "pipeline_edge_cycle_ms": pipeline_edge_cycle_ms,
+                    "pipeline_alignment_error_ms": pipeline_alignment_error_ms,
+                    "proactive_used": use_proactive,
+                    "proactive_reused_tokens": len(retained_proactive_ids),
+                }
+            )
+        self._schedule(now_ms + duration_ms, EventType.DRAFT_DONE, segment.segment_id)
+
+    def _draft_prefix(self, request: Request) -> tuple[list[int], int, bool]:
+        prefix_ids = request.prompt_ids + request.generated_ids
+        position = request.committed_pos
+        speculative_count = 0
+        while position in request.pending_segments:
+            segment = self.segments[request.pending_segments[position]]
+            if segment.status not in ACTIVE_SEGMENT_STATUSES:
+                break
+            if segment.gamma <= 0:
+                return prefix_ids, speculative_count, True
+            prefix_ids.extend(segment.draft_ids)
+            speculative_count += segment.gamma
+            position += segment.gamma
+        return prefix_ids, speculative_count, False
+
+    def _select_gamma(
+        self,
+        request: Request,
+        device: Device,
+        now_ms: float,
+        remaining: int,
+    ) -> int:
+        fixed = min(int(self.config["speculation"]["gamma_fixed"]), remaining)
+        if self._is_server_only_runtime():
+            return max(1, min(self._specedge_max_beam_len(), remaining))
+        if not self.spec.adaptive_gamma:
+            return max(1, fixed)
+        candidates = sorted(
+            {
+                int(value)
+                for value in self.config["speculation"]["gamma_candidates"]
+                if 0 < int(value) <= remaining
+            }
+        )
+        if not candidates:
+            candidates = [remaining]
+        acceptance_prior = (
+            self._server_only_acceptance_prior()
+            if self._is_server_only_runtime()
+            else device.acceptance_prior
+        )
+        alpha = self.acceptance.estimate(request.request_id, acceptance_prior)
+        if self.spec.runtime == "specedge":
+            candidates = [min(candidate, self._specedge_max_beam_len()) for candidate in candidates]
+            candidates = sorted({candidate for candidate in candidates if candidate > 0})
+            return self._select_specedge_pipeline_gamma(
+                request,
+                device,
+                now_ms,
+                remaining,
+                candidates,
+                alpha,
+            )
+
+        def score(gamma: int) -> tuple[float, int]:
+            emitted = expected_emitted_tokens(alpha, gamma)
+            uplink_ms = 0.0
+            downlink_ms = 0.0
+            if not self._is_server_only_runtime():
+                uplink_ms = self._speculative_network_delay_ms(
+                    device,
+                    gamma,
+                    "uplink",
+                    f"estimate-up:{gamma}",
+                )
+                downlink_ms = self._speculative_network_delay_ms(
+                    device,
+                    max(1, round(emitted)),
+                    "downlink",
+                    f"estimate-down:{gamma}",
+                )
+            draft_ms = (
+                self._server_only_draft_latency_ms(gamma)
+                if self._is_server_only_runtime()
+                else draft_latency_ms(device, gamma)
+            )
+            latency = (
+                draft_ms
+                + self._predicted_target_wait_ms(now_ms)
+                + self.predict_verify_latency_ms(gamma)
+                + uplink_ms
+                + downlink_ms
+            )
+            return emitted / latency, -gamma
+
+        return max(candidates, key=score)
+
+    def _select_specedge_pipeline_gamma(
+        self,
+        request: Request,
+        device: Device,
+        now_ms: float,
+        remaining: int,
+        candidates: Sequence[int],
+        alpha: float,
+    ) -> int:
+        target_ms = self._specedge_pipeline_target_ms(now_ms)
+
+        def score(gamma: int) -> tuple[float, float, int]:
+            emitted = expected_emitted_tokens(alpha, gamma)
+            edge_cycle_ms = self._specedge_edge_cycle_ms(device, gamma, emitted)
+            alignment_error_ms = abs(target_ms - edge_cycle_ms)
+            return (alignment_error_ms, -emitted, gamma)
+
+        return min(candidates, key=score)
+
+    def _specedge_pipeline_target_ms(self, now_ms: float) -> float:
+        server_busy_gap_ms = max(0.0, self._batch_busy_until_ms - now_ms)
+        return max(self._last_specedge_verify_ms, server_busy_gap_ms)
+
+    def _specedge_edge_cycle_ms(self, device: Device, gamma: int, emitted_tokens: float) -> float:
+        uplink_ms = self._speculative_network_delay_ms(
+            device,
+            gamma,
+            "uplink",
+            f"pipeline-up:{device.device_id}:{gamma}",
+        )
+        downlink_ms = self._speculative_network_delay_ms(
+            device,
+            max(1, round(emitted_tokens)),
+            "downlink",
+            f"pipeline-down:{device.device_id}:{gamma}",
+        )
+        return draft_latency_ms(device, gamma) + uplink_ms + downlink_ms
+
+    def _predicted_target_wait_ms(self, now_ms: float) -> float:
+        if self._is_server_only_runtime():
+            return max(0.0, self._server_only_verify_available_ms - now_ms)
+        if self.spec.global_batch:
+            return max(0.0, self._batch_busy_until_ms - now_ms)
+        if not self.lanes:
+            return 0.0
+        return min(
+            max(0.0, lane.busy_until_ms - now_ms)
+            + sum(self.predict_verify_latency_ms(self.segments[item].verify_gamma) for item in lane.queue)
+            for lane in self.lanes
+        )
+
+    def _on_draft_done(self, now_ms: float, segment_id: int) -> None:
+        segment = self.segments[segment_id]
+        runtime = self.device_runtimes[segment.device_id]
+        if runtime.active_segment_id == segment_id:
+            runtime.active_segment_id = None
+            runtime.busy_until_ms = now_ms
+        request = self.requests[segment.request_id]
+        if (
+            segment.status == "drafting"
+            and request.status == "running"
+            and segment.prefix_version == request.prefix_version
+            and request.pending_segments.get(segment.base_pos) == segment_id
+        ):
+            segment.status = "in_transit"
+            payload_bytes = self._payload_bytes(self._segment_payload_tokens(segment))
+            delay_ms = self._network_delay_ms(
+                runtime.device,
+                "uplink",
+                segment.segment_id,
+                payload_bytes,
+            )
+            segment.uplink_payload_bytes = payload_bytes
+            segment.uplink_delay_ms = delay_ms
+            self._schedule(now_ms + delay_ms, EventType.PACKET_ARRIVE_EDGE, segment_id)
+            if self.spec.runtime == "specedge":
+                self._start_proactive_draft(segment, now_ms)
+            self._refresh_drafting(request, now_ms)
+        elif segment.status not in FINAL_SEGMENT_STATUSES:
+            self._stale_segment(segment)
+        self._try_start_device(runtime, now_ms)
+
+    def _on_packet_arrive_edge(self, now_ms: float, segment_id: int) -> None:
+        segment = self.segments[segment_id]
+        request = self.requests[segment.request_id]
+        segment.edge_arrival_time_ms = now_ms
+        if segment.status in FINAL_SEGMENT_STATUSES:
+            return
+        if request.status != "running":
+            self._discard_segment(segment)
+            return
+        if segment.prefix_version != request.prefix_version:
+            self._stale_segment(segment)
+            return
+        if self.spec.global_batch:
+            if segment.base_pos != request.edge_frontier_pos:
+                return
+            segment.status = "queued"
+            self._batch_buffer.append(segment_id)
+            if self._uses_specedge_dynamic_batch():
+                self._ensure_batch_flush(now_ms)
+                return
+            self._ensure_batch_timeout(now_ms)
+            self._maybe_start_batch(now_ms)
+            return
+        self._enqueue_ready_segments(request, now_ms)
+
+    def _enqueue_ready_segments(self, request: Request, now_ms: float) -> None:
+        if self._allows_out_of_order_verify():
+            for segment_id in sorted(
+                request.pending_segments.values(),
+                key=lambda item: (self.segments[item].base_pos, item),
+            ):
+                self._enqueue_segment_if_ready(self.segments[segment_id], now_ms)
+            return
+        segment_id = request.pending_segments.get(request.edge_frontier_pos)
+        if segment_id is None:
+            return
+        self._enqueue_segment_if_ready(self.segments[segment_id], now_ms)
+
+    def _enqueue_segment_if_ready(self, segment: Segment, now_ms: float) -> None:
+        request = self.requests[segment.request_id]
+        if (
+            segment.status != "in_transit"
+            or segment.edge_arrival_time_ms is None
+            or segment.prefix_version != request.prefix_version
+            or request.status != "running"
+        ):
+            return
+        lane = self.scheduler.select(
+            self.lanes,
+            segment,
+            now_ms,
+            self.predict_verify_latency_ms,
+            self.segments,
+        )
+        segment.lane_id = lane.lane_id
+        segment.status = "queued"
+        lane.queue.append(segment.segment_id)
+        self._try_start_lane(lane, now_ms)
+
+    def _try_start_lane(self, lane: VerifierLane, now_ms: float) -> None:
+        if lane.active_segment_id is not None:
+            return
+        while lane.queue:
+            segment = self.segments[lane.queue.pop(0)]
+            request = self.requests[segment.request_id]
+            if (
+                segment.status != "queued"
+                or segment.prefix_version != request.prefix_version
+                or request.status != "running"
+                or (
+                    not self._allows_out_of_order_verify()
+                    and segment.base_pos != request.edge_frontier_pos
+                )
+            ):
+                if segment.status not in FINAL_SEGMENT_STATUSES:
+                    self._stale_segment(segment)
+                continue
+            result = self.model_runner.verify(segment.prefix_ids, segment.draft_ids)
+            duration_ms = self.predict_verify_latency_ms(segment.verify_gamma)
+            self._verification_results[segment.segment_id] = result
+            segment.status = "verifying"
+            segment.verify_start_time_ms = now_ms
+            segment.verify_compute_ms = duration_ms
+            queue_wait_ms = now_ms - float(segment.edge_arrival_time_ms)
+            self._lane_queue_wait_times_ms.append(queue_wait_ms)
+            segment.verify_done_time_ms = now_ms + duration_ms
+            lane.busy_until_ms = segment.verify_done_time_ms
+            lane.active_segment_id = segment.segment_id
+            lane.total_busy_time_ms += duration_ms
+            lane.processed_segments += 1
+            self._schedule(segment.verify_done_time_ms, EventType.VERIFY_DONE, segment.segment_id)
+            self._trace.append(
+                {
+                    "event": "lane_verify",
+                    "method": self.spec.name,
+                    "segment_id": segment.segment_id,
+                    "request_id": segment.request_id,
+                    "device_id": segment.device_id,
+                    "draft_model": segment.draft_model,
+                    "lane_id": lane.lane_id,
+                    "scheduled_gamma": segment.scheduled_gamma,
+                    "verify_gamma": segment.verify_gamma,
+                    "batch_size": 1,
+                    "start_time_ms": now_ms,
+                    "finish_time_ms": segment.verify_done_time_ms,
+                    "compute_ms": duration_ms,
+                    "queue_wait_ms": queue_wait_ms,
+                }
+            )
+            return
+
+    def _on_verify_done(self, now_ms: float, segment_id: int) -> None:
+        segment = self.segments[segment_id]
+        lane = self.lanes[int(segment.lane_id)]
+        if lane.active_segment_id != segment_id:
+            return
+        lane.active_segment_id = None
+        lane.busy_until_ms = now_ms
+        if segment.status == "verifying":
+            if self._allows_out_of_order_verify():
+                segment.status = "verified"
+                self._drain_verified_results(self.requests[segment.request_id], now_ms)
+            else:
+                self._resolve_verification(
+                    segment,
+                    self._verification_results.pop(segment_id),
+                    now_ms,
+                )
+        self._try_start_lane(lane, now_ms)
+
+    def _ensure_batch_timeout(self, now_ms: float) -> None:
+        if not self._batch_buffer or self._batch_timeout_deadline_ms is not None:
+            return
+        timeout_ms = self._global_batch_timeout_ms()
+        if timeout_ms is None:
+            return
+        oldest_ms = min(float(self.segments[item].edge_arrival_time_ms) for item in self._batch_buffer)
+        deadline_ms = max(
+            oldest_ms + timeout_ms,
+            self._batch_busy_until_ms,
+            now_ms,
+        )
+        self._batch_timeout_token += 1
+        self._batch_timeout_deadline_ms = deadline_ms
+        self._schedule(deadline_ms, EventType.BATCH_TIMEOUT, self._batch_timeout_token)
+
+    def _ensure_batch_flush(self, now_ms: float) -> None:
+        if (
+            not self._batch_buffer
+            or self._batch_flush_deadline_ms is not None
+            or self._batch_busy_until_ms > now_ms
+        ):
+            return
+        self._batch_flush_token += 1
+        self._batch_flush_deadline_ms = now_ms
+        self._schedule(now_ms, EventType.BATCH_FLUSH, self._batch_flush_token)
+
+    def _on_batch_flush(self, now_ms: float, token: int) -> None:
+        if token != self._batch_flush_token:
+            return
+        self._batch_flush_deadline_ms = None
+        if self._batch_busy_until_ms > now_ms:
+            return
+        if not self._maybe_start_batch(now_ms, force=True) and self._batch_buffer:
+            self._ensure_batch_flush(now_ms)
+
+    def _on_batch_timeout(self, now_ms: float, token: int) -> None:
+        if token != self._batch_timeout_token:
+            return
+        self._batch_timeout_deadline_ms = None
+        if self._batch_busy_until_ms > now_ms:
+            self._ensure_batch_timeout(now_ms)
+            return
+        self._maybe_start_batch(now_ms, force=True)
+
+    def _maybe_start_batch(self, now_ms: float, force: bool = False) -> bool:
+        if self._batch_busy_until_ms > now_ms or not self._batch_buffer:
+            return False
+        batch_size = self._global_batch_size()
+        if self._uses_specedge_dynamic_batch():
+            pass
+        elif len(self._batch_buffer) < batch_size and not force:
+            return False
+        segment_ids = self._batch_buffer[:batch_size]
+        del self._batch_buffer[:batch_size]
+        self._batch_timeout_token += 1
+        self._batch_timeout_deadline_ms = None
+        segments = [
+            self.segments[item]
+            for item in segment_ids
+            if self.segments[item].status == "queued"
+            and self.segments[item].base_pos == self.requests[self.segments[item].request_id].edge_frontier_pos
+        ]
+        if not segments:
+            self._ensure_batch_timeout(now_ms)
+            return False
+        waiting_ms = sum(now_ms - float(segment.edge_arrival_time_ms) for segment in segments)
+        self._batch_waiting_time_ms += waiting_ms
+        results = self.model_runner.verify_batch(
+            [SemanticVerifyInput(segment.prefix_ids, segment.draft_ids) for segment in segments]
+        )
+        duration_ms = self._verify_latency_for_segments(segments)
+        finish_ms = now_ms + duration_ms
+        if self._is_specedge_runtime():
+            idle_bubble_ms = max(0.0, now_ms - self._batch_busy_until_ms)
+            self._pipeline_idle_bubble_ms += idle_bubble_ms
+            self._last_specedge_verify_ms = duration_ms
+        self._batch_busy_until_ms = finish_ms
+        for segment, result in zip(segments, results):
+            self._verification_results[segment.segment_id] = result
+            segment.status = "verifying"
+            segment.verify_start_time_ms = now_ms
+            segment.verify_done_time_ms = finish_ms
+            segment.verify_compute_ms = duration_ms
+        self._schedule(finish_ms, EventType.BATCH_VERIFY_DONE, [segment.segment_id for segment in segments])
+        self._trace.append(
+            {
+                "event": "global_batch_verify",
+                "method": self.spec.name,
+                "segment_ids": [segment.segment_id for segment in segments],
+                "batch_size": len(segments),
+                "start_time_ms": now_ms,
+                "finish_time_ms": finish_ms,
+                "compute_ms": duration_ms,
+                "tree_budget_nodes": max(segment.tree_budget_nodes for segment in segments),
+                "batch_type": self._specedge_server_batch_type() if self._is_specedge_runtime() else "timeout",
+                "pipeline_idle_bubble_ms": idle_bubble_ms if self._is_specedge_runtime() else 0.0,
+            }
+        )
+        self._ensure_batch_timeout(now_ms)
+        return True
+
+    def _on_batch_verify_done(self, now_ms: float, segment_ids: list[int]) -> None:
+        self._batch_busy_until_ms = now_ms
+        for segment_id in segment_ids:
+            segment = self.segments[segment_id]
+            if segment.status == "verifying":
+                self._resolve_verification(
+                    segment,
+                    self._verification_results.pop(segment_id),
+                    now_ms,
+                )
+        if self._uses_specedge_dynamic_batch():
+            self._ensure_batch_flush(now_ms)
+        else:
+            self._maybe_start_batch(now_ms)
+        self._ensure_batch_timeout(now_ms)
+
+    def _drain_verified_results(self, request: Request, now_ms: float) -> None:
+        while request.status == "running":
+            segment_id = request.pending_segments.get(request.edge_frontier_pos)
+            if segment_id is None:
+                return
+            segment = self.segments[segment_id]
+            if segment.status != "verified":
+                return
+            result = self._verification_results.pop(segment_id)
+            self._resolve_verification(segment, result, now_ms)
+            if result.rejected:
+                return
+
+    def _resolve_verification(
+        self,
+        segment: Segment,
+        result: VerificationResult,
+        now_ms: float,
+    ) -> None:
+        request = self.requests[segment.request_id]
+        if segment.base_pos != request.edge_frontier_pos:
+            self._stale_segment(segment)
+            return
+        result_base_pos = segment.base_pos
+        remaining = request.output_len - request.edge_frontier_pos
+        emitted_ids = list(result.emitted_ids[:remaining])
+        request.pending_segments.pop(segment.base_pos, None)
+        segment.result_base_pos = result_base_pos
+        segment.accepted_count = result.accepted_count
+        segment.emitted_ids = emitted_ids
+        request.accepted_tokens += result.accepted_count
+        self.device_runtimes[segment.device_id].accepted_draft_tokens += result.accepted_count
+        self.acceptance.observe(request.request_id, result.accepted_count, segment.gamma)
+        request.edge_generated_ids.extend(emitted_ids)
+        if result.rejected:
+            segment.status = "rejected"
+            request.rejected_count += 1
+            request.rollback_count += 1
+            request.prefix_version += 1
+            self._record_proactive_miss(request, segment)
+            self._clear_proactive(request)
+            self._record_rejection_waste(segment)
+            self._invalidate_pending(request)
+        else:
+            segment.status = "accepted"
+            self._resolve_proactive_after_accept(request, segment, result)
+            if result.bonus_token is not None and emitted_ids and emitted_ids[-1] == result.bonus_token:
+                self._retarget_after_bonus(request, segment, result.bonus_token)
+        if request.edge_frontier_pos >= request.output_len:
+            self._invalidate_pending(request)
+        request.completed_results[result_base_pos] = segment.segment_id
+        if self._is_server_only_runtime():
+            payload_bytes = 0
+            delay_ms = 0.0
+        else:
+            downlink_tokens = len(emitted_ids)
+            payload_bytes = self._payload_bytes(downlink_tokens)
+            delay_ms = self._network_delay_ms(
+                self.devices[segment.device_id],
+                "downlink",
+                segment.segment_id,
+                payload_bytes,
+            )
+        segment.downlink_payload_bytes = payload_bytes
+        segment.downlink_delay_ms = delay_ms
+        self._trace.append(
+            {
+                "event": "verification_result",
+                "method": self.spec.name,
+                "segment_id": segment.segment_id,
+                "request_id": segment.request_id,
+                "device_id": segment.device_id,
+                "draft_model": segment.draft_model,
+                "scheduled_gamma": segment.scheduled_gamma,
+                "verify_gamma": segment.verify_gamma,
+                "accepted_count": segment.accepted_count,
+                "emitted_count": segment.emitted_count,
+                "finish_time_ms": now_ms,
+                "downlink_ms": delay_ms,
+                "downlink_payload_bytes": payload_bytes,
+                "tree_budget_nodes": segment.tree_budget_nodes,
+            }
+        )
+        result_arrival_ms = now_ms + delay_ms
+        if segment.proactive_done_time_ms is not None:
+            result_arrival_ms = max(result_arrival_ms, segment.proactive_done_time_ms)
+        self._schedule(result_arrival_ms, EventType.RESULT_ARRIVE_DEVICE, segment.segment_id)
+        if not self.spec.global_batch and not self._is_server_only_runtime():
+            self._enqueue_ready_segments(request, now_ms)
+
+    def _start_proactive_draft(self, segment: Segment, start_ms: float) -> None:
+        if not self._specedge_proactive_enabled():
+            return
+        request = self.requests[segment.request_id]
+        if request.status != "running":
+            return
+        remaining_after_bonus = request.output_len - (segment.base_pos + segment.gamma + 1)
+        if remaining_after_bonus <= 0:
+            return
+        proactive_len = min(
+            int(self.config["specedge"]["proactive_max_beam_len"]),
+            remaining_after_bonus + 1,
+        )
+        proactive_prefix = segment.prefix_ids + segment.draft_ids
+        proactive_ids = self.model_runner.draft(
+            self.devices[segment.device_id].drafter_profile,
+            proactive_prefix,
+            proactive_len,
+        )
+        if not proactive_ids:
+            return
+        proactive_compute_ms = draft_latency_ms(self.devices[segment.device_id], len(proactive_ids))
+        runtime = self.device_runtimes[segment.device_id]
+        if runtime.active_segment_id is not None:
+            return
+        finish_ms = start_ms + proactive_compute_ms
+        runtime.active_segment_id = segment.segment_id
+        runtime.busy_until_ms = finish_ms
+        runtime.total_busy_time_ms += proactive_compute_ms
+        runtime.generated_draft_tokens += len(proactive_ids)
+        segment.proactive_used = True
+        segment.proactive_draft_ids = proactive_ids
+        segment.proactive_start_time_ms = start_ms
+        segment.proactive_done_time_ms = finish_ms
+        self._trace.append(
+            {
+                "event": "proactive_draft",
+                "method": self.spec.name,
+                "request_id": segment.request_id,
+                "segment_id": segment.segment_id,
+                "device_id": segment.device_id,
+                "draft_model": segment.draft_model,
+                "batch_size": 1,
+                "scheduled_gamma": len(proactive_ids),
+                "verify_gamma": len(proactive_ids),
+                "start_time_ms": start_ms,
+                "finish_time_ms": finish_ms,
+                "compute_ms": proactive_compute_ms,
+                "tree_budget_nodes": len(proactive_ids),
+            }
+        )
+        self._schedule(finish_ms, EventType.PROACTIVE_DRAFT_DONE, segment.segment_id)
+
+    def _on_proactive_draft_done(self, now_ms: float, segment_id: int) -> None:
+        segment = self.segments[segment_id]
+        runtime = self.device_runtimes[segment.device_id]
+        if runtime.active_segment_id == segment_id:
+            runtime.active_segment_id = None
+            runtime.busy_until_ms = now_ms
+        self._try_start_device(runtime, now_ms)
+
+    def _resolve_proactive_after_accept(
+        self,
+        request: Request,
+        segment: Segment,
+        result: VerificationResult,
+    ) -> None:
+        if self.spec.runtime != "specedge" or not segment.proactive_draft_ids:
+            return
+        if result.bonus_token is not None and segment.proactive_draft_ids[0] == result.bonus_token:
+            segment.proactive_hit = True
+            request.proactive_draft_ids = segment.proactive_draft_ids[1:]
+            request.proactive_base_pos = request.edge_frontier_pos
+            request.proactive_prefix_version = request.prefix_version
+            return
+        self._record_proactive_miss(request, segment)
+        self._clear_proactive(request)
+
+    def _record_proactive_miss(self, request: Request, segment: Segment) -> None:
+        if not segment.proactive_draft_ids or segment.proactive_hit or segment.proactive_wasted_tokens:
+            return
+        segment.proactive_wasted_tokens = len(segment.proactive_draft_ids)
+        request.wasted_draft_tokens += segment.proactive_wasted_tokens
+
+    def _clear_proactive(self, request: Request) -> None:
+        request.proactive_draft_ids = []
+        request.proactive_base_pos = None
+        request.proactive_prefix_version = None
+
+    def _invalidate_pending_from(
+        self,
+        request: Request,
+        base_pos: int,
+        exclude_segment_id: int,
+    ) -> None:
+        for segment_id in list(request.pending_segments.values()):
+            if segment_id == exclude_segment_id:
+                continue
+            segment = self.segments[segment_id]
+            if segment.base_pos < base_pos or segment.status not in ACTIVE_SEGMENT_STATUSES:
+                continue
+            if self.spec.prefix_control == "conservative":
+                self._discard_segment(segment)
+            else:
+                self._stale_segment(segment)
+
+    def _retarget_verified_result_after_bonus(
+        self,
+        result: VerificationResult,
+        bonus_token: int,
+    ) -> VerificationResult | None:
+        if (
+            not result.emitted_ids
+            or result.emitted_ids[0] != bonus_token
+            or result.accepted_count < 1
+        ):
+            return None
+        return VerificationResult(
+            accepted_count=result.accepted_count - 1,
+            emitted_ids=list(result.emitted_ids[1:]),
+            rejected=result.rejected,
+            bonus_token=result.bonus_token,
+        )
+
+    def _retarget_after_bonus(self, request: Request, source: Segment, bonus_token: int) -> None:
+        next_base = int(source.result_base_pos) + source.gamma
+        segment_id = request.pending_segments.get(next_base)
+        if segment_id is None:
+            return
+        segment = self.segments[segment_id]
+        if (
+            not self.spec.bonus_retarget
+            or not segment.draft_ids
+            or segment.draft_ids[0] != bonus_token
+        ):
+            request.prefix_version += 1
+            self._invalidate_pending(request)
+            return
+        if segment.status in {"verifying", "verified"}:
+            transformed = self._retarget_verified_result_after_bonus(
+                self._verification_results[segment.segment_id],
+                bonus_token,
+            )
+            if transformed is None:
+                request.prefix_version += 1
+                self._invalidate_pending(request)
+                return
+            self._verification_results[segment.segment_id] = transformed
+            invalidate_descendants = True
+        else:
+            invalidate_descendants = False
+        request.pending_segments.pop(next_base, None)
+        segment.base_pos += 1
+        segment.prefix_ids.append(bonus_token)
+        segment.draft_ids.pop(0)
+        segment.bonus_reused = True
+        request.bonus_reused_tokens += 1
+        if invalidate_descendants:
+            self._invalidate_pending_from(request, segment.base_pos, segment.segment_id)
+        if not segment.draft_ids and segment.status not in {"verifying", "verified"}:
+            segment.status = "absorbed"
+            if segment.segment_id in request.in_flight_segments:
+                request.in_flight_segments.remove(segment.segment_id)
+            return
+        request.pending_segments[segment.base_pos] = segment.segment_id
+
+    def _on_result_arrive_device(self, now_ms: float, segment_id: int) -> None:
+        segment = self.segments[segment_id]
+        request = self.requests[segment.request_id]
+        if request.status != "running":
+            return
+        segment.result_arrived = True
+        self._commit_ready_results(request, now_ms)
+        if (
+            len(request.generated_ids) >= request.output_len
+            or (self.model_runner.eos_token_id is not None and self.model_runner.eos_token_id in request.generated_ids)
+        ):
+            if self._is_server_only_runtime():
+                self._schedule_server_only_response_downlink(request, now_ms)
+            else:
+                self._schedule(now_ms, EventType.REQUEST_FINISH, request.request_id)
+            return
+        if not self.spec.global_batch and not self._is_server_only_runtime():
+            self._enqueue_ready_segments(request, now_ms)
+        if self._is_server_only_runtime():
+            self._start_server_only_draft(request, now_ms)
+        else:
+            self._refresh_drafting(request, now_ms)
+
+    def _schedule_server_only_response_downlink(self, request: Request, now_ms: float) -> None:
+        payload_bytes = self._payload_bytes(len(request.generated_ids))
+        delay_ms = self._network_delay_ms(
+            self.devices[request.device_id],
+            "downlink",
+            f"server-only:{request.request_id}",
+            payload_bytes,
+        )
+        request.target_only_downlink_payload_bytes = payload_bytes
+        request.target_only_downlink_ms = delay_ms
+        request.first_token_time_ms = now_ms + delay_ms if request.generated_ids else None
+        self._trace.append(
+            {
+                "event": "server_only_response_downlink",
+                "method": self.spec.name,
+                "request_id": request.request_id,
+                "device_id": request.device_id,
+                "start_time_ms": now_ms,
+                "finish_time_ms": now_ms + delay_ms,
+                "downlink_ms": delay_ms,
+                "downlink_payload_bytes": payload_bytes,
+            }
+        )
+        if self._server_only_active_request_id == request.request_id:
+            self._server_only_active_request_id = None
+            self._maybe_start_server_only_request(now_ms)
+        self._schedule(now_ms + delay_ms, EventType.REQUEST_FINISH, request.request_id)
+
+    def _commit_ready_results(self, request: Request, now_ms: float) -> None:
+        while True:
+            segment_id = request.completed_results.get(request.committed_pos)
+            if segment_id is None:
+                return
+            segment = self.segments[segment_id]
+            if not segment.result_arrived:
+                return
+            request.completed_results.pop(request.committed_pos)
+            if segment_id in request.in_flight_segments:
+                request.in_flight_segments.remove(segment_id)
+            if segment.emitted_ids and request.first_token_time_ms is None:
+                request.first_token_time_ms = now_ms
+            request.generated_ids.extend(segment.emitted_ids)
+
+    def _on_request_finish(self, now_ms: float, request_id: int) -> None:
+        request = self.requests[request_id]
+        if request.status == "finished":
+            return
+        request.status = "finished"
+        request.finish_time_ms = now_ms
+        request.draft_queued = False
+        for segment_id in list(request.in_flight_segments):
+            segment = self.segments[segment_id]
+            if segment.status in ACTIVE_SEGMENT_STATUSES:
+                self._discard_segment(segment)
+        self._trace.append(
+            {
+                "event": "request_finish",
+                "method": self.spec.name,
+                "request_id": request_id,
+                "device_id": request.device_id,
+                "finish_time_ms": now_ms,
+            }
+        )
+        if self._progress_callback is not None:
+            self._progress_callback(sum(item.status == "finished" for item in self.requests), len(self.requests))
+        if self._is_server_only_runtime() and self._server_only_active_request_id == request_id:
+            self._server_only_active_request_id = None
+            self._maybe_start_server_only_request(now_ms)
+
+    def _invalidate_pending(self, request: Request) -> None:
+        for segment_id in list(request.pending_segments.values()):
+            segment = self.segments[segment_id]
+            if segment.status not in ACTIVE_SEGMENT_STATUSES:
+                continue
+            if self.spec.prefix_control == "conservative":
+                self._discard_segment(segment)
+            else:
+                self._stale_segment(segment)
+
+    def _stale_segment(self, segment: Segment) -> None:
+        if segment.status in FINAL_SEGMENT_STATUSES:
+            return
+        self._verification_results.pop(segment.segment_id, None)
+        segment.status = "stale"
+        self._remove_from_request(segment)
+        self._record_waste(segment)
+
+    def _discard_segment(self, segment: Segment) -> None:
+        if segment.status in FINAL_SEGMENT_STATUSES:
+            return
+        self._verification_results.pop(segment.segment_id, None)
+        segment.status = "discarded"
+        self._remove_from_request(segment)
+        self._record_waste(segment)
+
+    def _remove_from_request(self, segment: Segment) -> None:
+        request = self.requests[segment.request_id]
+        if segment.segment_id in request.in_flight_segments:
+            request.in_flight_segments.remove(segment.segment_id)
+        if request.pending_segments.get(segment.base_pos) == segment.segment_id:
+            request.pending_segments.pop(segment.base_pos, None)
+
+    def _record_rejection_waste(self, segment: Segment) -> None:
+        if segment.waste_recorded:
+            return
+        self.requests[segment.request_id].wasted_draft_tokens += (
+            segment.gamma - int(segment.accepted_count or 0)
+        )
+        segment.waste_recorded = True
+
+    def _record_waste(self, segment: Segment) -> None:
+        if segment.waste_recorded:
+            return
+        self.requests[segment.request_id].wasted_draft_tokens += segment.gamma
+        segment.waste_recorded = True
+
+    def _payload_bytes(self, token_count: int) -> int:
+        network = self.config["network"]
+        return int(network["packet_header_bytes"]) + (
+            token_count * int(network["packet_token_bytes"])
+        )
+
+    def _speculative_network_delay_ms(
+        self,
+        device: Device,
+        token_count: int,
+        direction: str,
+        key: Any,
+    ) -> float:
+        return self._network_delay_ms(device, direction, key, self._payload_bytes(token_count))
+
+    def _network_delay_ms(
+        self,
+        device: Device,
+        direction: str,
+        key: Any,
+        payload_bytes: int,
+    ) -> float:
+        return network_delay_ms(
+            int(self.config["simulation"]["seed"]),
+            device,
+            direction,
+            key,
+            payload_bytes,
+        )

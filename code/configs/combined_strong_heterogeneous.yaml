@@ -1,0 +1,38 @@
+simulation:
+  num_devices: 8
+  request_arrival: poisson
+  poisson_rate_per_s: 20
+
+device_pools:
+  heterogeneous:
+    templates:
+      low_end:
+        count: 3
+        draft_token_rate_tok_s: 25
+        uplink_mbps: 5
+        downlink_mbps: 30
+        rtt_ms: 90
+        jitter_ms: 25
+      mid_end:
+        count: 3
+        draft_token_rate_tok_s: 60
+        uplink_mbps: 25
+        downlink_mbps: 100
+        rtt_ms: 40
+        jitter_ms: 10
+      high_end:
+        count: 2
+        draft_token_rate_tok_s: 100
+        uplink_mbps: 100
+        downlink_mbps: 300
+        rtt_ms: 10
+        jitter_ms: 2
+  medium_only:
+    templates:
+      medium:
+        count: 8
+        draft_token_rate_tok_s: 60
+        uplink_mbps: 25
+        downlink_mbps: 100
+        rtt_ms: 40
+        jitter_ms: 10

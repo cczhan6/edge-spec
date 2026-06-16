@@ -1,0 +1,137 @@
+# 异构端边推测解码仿真器
+
+本目录实现一个用于论文实验的端边推测解码事件仿真器。真实 drafter 和 target 模型负责生成 token、计算 greedy acceptance、correction 和 bonus；虚拟设备、网络和边缘服务器的时延由解析公式给出；事件仿真器负责推进 draft、verify、通信、排队、回滚和请求完成状态。
+
+除特别说明外，以下命令均在仓库根目录的 `code/` 目录中执行。
+
+真实模型 forward 的 wall time 不进入虚拟时间。因此，该仿真器可以在不部署大量真实端侧设备的情况下，评估异构端侧 drafter、边缘 target、异步验证和调度策略对端到端时延与吞吐的影响。
+
+## 文档导航
+
+| 目标 | 文档 |
+|---|---|
+| 文档维护规则和阅读顺序 | [docs/README.md](docs/README.md) |
+| 实验口径、场景、方法和推荐实验 | [docs/experiment.md](docs/experiment.md) |
+| 输出文件和指标定义 | [docs/metric.md](docs/metric.md) |
+| 最近一次实验结果分析 | [docs/latest_experiment_analysis.md](docs/latest_experiment_analysis.md) |
+| 历史 run 分析 | `docs/experiment_analysis_<RUN_ID>.md` |
+
+## 核心口径
+
+- 请求固定绑定到 origin client device，不在设备之间迁移。
+- 每台虚拟 client 固定部署一个 drafter，并以 segment 级 FIFO 串行服务本地请求。
+- 边缘服务器部署 target model，负责 target verification 和 target-only 生成。
+- `draft_ms`、`verify_ms`、`target_only_ms` 和 `network_ms` 均由配置中的解析参数计算。
+- acceptance、correction 和 bonus 由真实模型在线产生，不使用预设 acceptance trace。
+- `full` 支持持续乐观起草、同请求多位置并行 verify、least-finish lane 调度和 bonus 重定位。
+
+## 方法
+
+| 方法 | 用途 | 简要说明 |
+|---|---|---|
+| `full` | 主方法 | 异构端侧 drafter、动态 gamma、多 verifier lane、持续乐观起草和精细回滚。 |
+| `target_only` | 自回归基线 | 请求上传边缘，由单个 target 服务资源完整生成。 |
+| `sync_batch_sd` | 同步 SD 基线 | 异构 drafter 和动态 gamma，但使用全局同步 batch verify。 |
+| `SpecEdge` | SpecEdge 机制级基线 | 线性 draft、server batch validation、proactive continuation 和 pipeline-aware scheduling。 |
+| `server_only` | SpecEdge server-only 近似 | 服务器侧 draft/verify 共址，不做 segment 级端边往返。 |
+| `wo_async` | 组件消融 | 去掉持续乐观起草。 |
+| `wo_scheduling` | 组件消融 | 去掉 heterogeneity-aware lane scheduling。 |
+| `conservative_rollback` | 组件消融 | 去掉精细 bonus 重定位和局部保留。 |
+
+## 场景
+
+`scripts/run.sh all` 默认运行以下场景：
+
+| 场景 | 目的 |
+|---|---|
+| `homogeneous` | 所有虚拟 client 使用 `medium` drafter，用于观察无设备强异构时的表现。 |
+| `balanced_drafter` | 网络相同，主要观察 drafter 质量和速度异构。 |
+| `network_heterogeneous` | 强化 RTT 和带宽差异，主要观察通信瓶颈。 |
+| `combined_strong_heterogeneous` | 设备、网络和到达过程均强异构，主要观察动态负载稳定性。 |
+
+场景覆盖文件位于 `configs/<scenario>.yaml`，会与 `configs/default.yaml` 深度合并。参数依据和解释见 [docs/experiment.md](docs/experiment.md)。
+
+## 环境
+
+```bash
+pip install -r requirements.txt
+```
+
+默认真实模型：
+
+| 角色 | 模型 | 宿主设备 |
+|---|---|---|
+| small drafter | `Qwen/Qwen2.5-0.5B-Instruct` | `cuda:0` |
+| medium drafter | `Qwen/Qwen2.5-1.5B-Instruct` | `cuda:0` |
+| large drafter | `Qwen/Qwen2.5-3B-Instruct` | `cuda:0` |
+| target | `Qwen/Qwen2.5-7B-Instruct` | `cuda:1` |
+
+宿主设备只影响真实语义计算的执行位置，不影响虚拟时间。若模型已在 Hugging Face cache 中，但网络或代理不稳定，可在配置的 `model_runner` 下设置 `local_files_only: true`，或运行时设置 `HF_HUB_OFFLINE=1`。
+
+## 运行
+
+```bash
+# 不加载真实模型的快速检查
+bash scripts/run.sh smoke
+
+# 默认 balanced_drafter + full
+bash scripts/run.sh single
+
+# 默认场景 + 主方法/基线
+bash scripts/run.sh all
+
+# verifier lane 数敏感性分析
+bash scripts/run.sh sensitivity-lanes
+```
+
+常用覆盖：
+
+| 环境变量 | 默认值 |
+|---|---|
+| `CONFIG` | `configs/default.yaml` |
+| `DATASET` | `data/spec_bench/question.jsonl` |
+| `RUN_ROOT` | `outputs/runs` |
+| `RUN_ID` | 当前开始时间，格式 `YYYYMMDD-HHMMSS` |
+| `SCENARIOS` | `homogeneous balanced_drafter network_heterogeneous combined_strong_heterogeneous` |
+| `METHODS` | `full target_only sync_batch_sd SpecEdge server_only` |
+| `USE_FAKE_MODEL_RUNNER` | `0` |
+| `SAMPLES_PER_CATEGORY` | 空，默认使用 `simulation.num_requests` 全局抽样 |
+
+初步验证可按 SpecBench 6 类均衡抽样，例如每类 10 条、总共 60 条：
+
+```bash
+SAMPLES_PER_CATEGORY=10 bash scripts/run.sh all
+```
+
+只运行强异构场景：
+
+```bash
+SCENARIOS=combined_strong_heterogeneous \
+SAMPLES_PER_CATEGORY=10 \
+bash scripts/run.sh all
+```
+
+## 输出
+
+每次运行会创建独立目录 `outputs/runs/<RUN_ID>/`，并写入 `manifest.yaml` 记录命令、配置、数据集、场景、方法、输出路径和 git 状态。若显式指定的 `RUN_ID` 或 `RUN_DIR` 已存在，脚本会退出，避免覆盖旧实验。
+
+主要输出包括：
+
+- `outputs/runs/<RUN_ID>/summary/all_results.csv`
+- `outputs/runs/<RUN_ID>/summary/category_results.csv`
+- `outputs/runs/<RUN_ID>/raw/main_results_<scenario>.csv`
+- `outputs/runs/<RUN_ID>/raw/category_results_<scenario>.csv`
+- `outputs/runs/<RUN_ID>/raw/system_metrics_<scenario>.csv`
+- `outputs/runs/<RUN_ID>/raw/device_metrics_<scenario>_<method>.csv`
+- `outputs/runs/<RUN_ID>/raw/request_details_<scenario>_<method>.csv`
+- `outputs/runs/<RUN_ID>/raw/segment_details_<scenario>_<method>.csv`
+- `outputs/runs/<RUN_ID>/raw/round_trace_<scenario>_<method>.csv`
+- `outputs/runs/<RUN_ID>/raw/event_details_<scenario>_<method>.csv`
+
+指标定义见 [docs/metric.md](docs/metric.md)。实验流程和推荐图表见 [docs/experiment.md](docs/experiment.md)。
+
+## 测试
+
+```bash
+python3 -m unittest discover -s tests -v
+```

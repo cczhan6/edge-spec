@@ -5,6 +5,12 @@ __pycache__/
 *.pyd
 *.egg-info/
 .pytest_cache/
+outputs/raw/*.csv
+outputs/summary/*.csv
+outputs/runs/
+code/outputs/
+.agents/
+.planning/
 
 # OS/editor
 .DS_Store

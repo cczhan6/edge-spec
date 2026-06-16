@@ -1,0 +1,46 @@
+simulation:
+  num_devices: 8
+  request_arrival: poisson
+  poisson_rate_per_s: 20
+
+device_pools:
+  heterogeneous:
+    templates:
+      low_end:
+        count: 0
+        drafter_profile: medium
+        draft_token_rate_tok_s: 60
+        draft_startup_ms: 2
+        uplink_mbps: 25
+        downlink_mbps: 100
+        rtt_ms: 40
+        jitter_ms: 10
+      mid_end:
+        count: 8
+        drafter_profile: medium
+        draft_token_rate_tok_s: 60
+        draft_startup_ms: 2
+        uplink_mbps: 25
+        downlink_mbps: 100
+        rtt_ms: 40
+        jitter_ms: 10
+      high_end:
+        count: 0
+        drafter_profile: medium
+        draft_token_rate_tok_s: 60
+        draft_startup_ms: 2
+        uplink_mbps: 25
+        downlink_mbps: 100
+        rtt_ms: 40
+        jitter_ms: 10
+  medium_only:
+    templates:
+      medium:
+        count: 8
+        drafter_profile: medium
+        draft_token_rate_tok_s: 60
+        draft_startup_ms: 2
+        uplink_mbps: 25
+        downlink_mbps: 100
+        rtt_ms: 40
+        jitter_ms: 10

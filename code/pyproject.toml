@@ -1,0 +1,15 @@
+[project]
+name = "edge-sd-sim"
+version = "0.3.0"
+description = "Semantic-in-the-loop analytical simulator for heterogeneous edge speculative decoding."
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0",
+  "torch>=2.2",
+  "transformers>=4.37",
+  "accelerate>=0.30",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

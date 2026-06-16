@@ -1,0 +1,29 @@
+simulation:
+  num_devices: 8
+  request_arrival: burst
+
+device_pools:
+  heterogeneous:
+    templates:
+      low_end:
+        uplink_mbps: 2
+        downlink_mbps: 20
+        rtt_ms: 200
+        jitter_ms: 50
+      mid_end:
+        uplink_mbps: 30
+        downlink_mbps: 120
+        rtt_ms: 80
+        jitter_ms: 15
+      high_end:
+        uplink_mbps: 200
+        downlink_mbps: 500
+        rtt_ms: 10
+        jitter_ms: 2
+  medium_only:
+    templates:
+      medium:
+        uplink_mbps: 30
+        downlink_mbps: 120
+        rtt_ms: 80
+        jitter_ms: 15

@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+from typing import Any
+
+from src.entities import Device
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def load_config(path: str | Path, scenario: str | None = None) -> dict[str, Any]:
+    config = _read_yaml(Path(path))
+    if scenario:
+        scenario_path = Path(path).parent / f"{scenario}.yaml"
+        if scenario_path.exists():
+            config = deep_merge(config, _read_yaml(scenario_path))
+    validate_config(config)
+    return config
+
+
+def validate_config(config: dict[str, Any]) -> None:
+    simulation = config["simulation"]
+    if int(simulation["num_requests"]) <= 0 or int(simulation["num_devices"]) <= 0:
+        raise ValueError("num_requests and num_devices must be positive")
+    edge = config["edge"]
+    if edge.get("lane_microbatch", False):
+        raise ValueError("lane microbatching is not supported")
+    if int(edge["num_lanes"]) <= 0:
+        raise ValueError("num_lanes must be positive")
+    if float(edge["target_only_token_rate_tok_s"]) <= 0:
+        raise ValueError("target_only_token_rate_tok_s must be positive")
+    speculation = config["speculation"]
+    if int(speculation["W_default"]) <= 0:
+        raise ValueError("W_default must be positive")
+    candidates = [int(value) for value in speculation["gamma_candidates"]]
+    if not candidates or any(value <= 0 for value in candidates):
+        raise ValueError("gamma_candidates must contain positive integers")
+    if int(speculation["gamma_fixed"]) <= 0:
+        raise ValueError("gamma_fixed must be positive")
+    specedge = config.get("specedge", {})
+    if specedge:
+        for key in (
+            "max_n_beams",
+            "max_beam_len",
+            "max_branch_width",
+            "max_budget",
+            "proactive_max_beam_len",
+            "proactive_max_budget",
+        ):
+            if int(specedge[key]) <= 0:
+                raise ValueError(f"specedge.{key} must be positive")
+        server_batch_size = specedge.get("server_batch_size", 1)
+        if server_batch_size is None:
+            server_batch_size = 1
+        if int(server_batch_size) <= 0:
+            raise ValueError("specedge.server_batch_size must be positive")
+        server_batch_timeout_ms = specedge.get(
+            "server_batch_timeout_ms",
+            config["sync_batch"]["global_batch_timeout_ms"],
+        )
+        if server_batch_timeout_ms is not None and float(server_batch_timeout_ms) < 0:
+            raise ValueError("specedge.server_batch_timeout_ms must be non-negative")
+        proactive_type = str(specedge.get("proactive_type", "excluded"))
+        if proactive_type not in {"included", "excluded", "disabled"}:
+            raise ValueError("specedge.proactive_type must be included, excluded, or disabled")
+        server_batch_type = str(specedge.get("server_batch_type", "static"))
+        if server_batch_type not in {"static", "dynamic"}:
+            raise ValueError("specedge.server_batch_type must be static or dynamic")
+        if int(specedge["proactive_max_beam_len"]) > int(specedge["max_beam_len"]):
+            raise ValueError("specedge.proactive_max_beam_len must not exceed max_beam_len")
+        if int(specedge["proactive_max_budget"]) > int(specedge["max_budget"]):
+            raise ValueError("specedge.proactive_max_budget must not exceed max_budget")
+    if not config["drafter_profiles"]:
+        raise ValueError("drafter_profiles must define at least one drafter")
+    model_runner = config.get("model_runner", config.get("oracle"))
+    if model_runner is None:
+        raise ValueError("model_runner must define model paths")
+    model_runner_models = model_runner["drafter_models"]
+    missing_models = sorted(set(config["drafter_profiles"]) - set(model_runner_models))
+    if missing_models:
+        raise ValueError(
+            "model_runner.drafter_models must define: " + ", ".join(missing_models)
+        )
+    server_only = config.get("server_only", {})
+    if server_only:
+        drafter = str(server_only["drafter_profile"])
+        if drafter not in config["drafter_profiles"]:
+            raise ValueError(f"server_only uses unknown drafter {drafter}")
+        if float(server_only["draft_token_rate_tok_s"]) <= 0:
+            raise ValueError("server_only.draft_token_rate_tok_s must be positive")
+        if float(server_only.get("draft_startup_ms", 0.0)) < 0:
+            raise ValueError("server_only.draft_startup_ms must be non-negative")
+    for pool_name in ("heterogeneous", "medium_only"):
+        pool = config["device_pools"].get(pool_name)
+        if not pool or not pool.get("templates"):
+            raise ValueError(f"device_pools.{pool_name}.templates must not be empty")
+        count = 0
+        for template_name, template in pool["templates"].items():
+            count += int(template["count"])
+            drafter = str(template["drafter_profile"])
+            if drafter not in config["drafter_profiles"]:
+                raise ValueError(
+                    f"device template {template_name} uses unknown drafter {drafter}"
+                )
+            if float(template["draft_token_rate_tok_s"]) <= 0:
+                raise ValueError("draft_token_rate_tok_s must be positive")
+            if float(template["uplink_mbps"]) <= 0 or float(template["downlink_mbps"]) <= 0:
+                raise ValueError("device bandwidth must be positive")
+        if count != int(simulation["num_devices"]):
+            raise ValueError(
+                f"device pool {pool_name} defines {count} devices, "
+                f"expected simulation.num_devices={simulation['num_devices']}"
+            )
+
+
+def build_devices(config: dict[str, Any], pool_name: str = "heterogeneous") -> list[Device]:
+    profiles = config["drafter_profiles"]
+    templates = config["device_pools"][pool_name]["templates"]
+    devices: list[Device] = []
+    for template_name, template in templates.items():
+        for _ in range(int(template["count"])):
+            drafter = str(template["drafter_profile"])
+            devices.append(
+                Device(
+                    device_id=len(devices),
+                    device_type=str(template_name),
+                    drafter_profile=drafter,
+                    acceptance_prior=float(profiles[drafter]["acceptance_prior"]),
+                    draft_token_rate_tok_s=float(template["draft_token_rate_tok_s"]),
+                    draft_startup_ms=float(template.get("draft_startup_ms", 0.0)),
+                    uplink_mbps=float(template["uplink_mbps"]),
+                    downlink_mbps=float(template["downlink_mbps"]),
+                    rtt_ms=float(template["rtt_ms"]),
+                    jitter_ms=float(template.get("jitter_ms", 0.0)),
+                )
+            )
+    return devices
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        import yaml
+    except ImportError:
+        return _parse_simple_yaml(text)
+    return yaml.safe_load(text)
+
+
+def _parse_simple_yaml(text: str) -> dict[str, Any]:
+    """Parse the mapping-only YAML subset used by the bundled configs."""
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    for raw_line in text.splitlines():
+        content = raw_line.split("#", 1)[0].rstrip()
+        if not content:
+            continue
+        indent = len(content) - len(content.lstrip(" "))
+        key, separator, raw_value = content.strip().partition(":")
+        if not separator:
+            raise ValueError(f"unsupported YAML line: {raw_line}")
+        while stack[-1][0] >= indent:
+            stack.pop()
+        parent = stack[-1][1]
+        if not raw_value.strip():
+            value: Any = {}
+            parent[key] = value
+            stack.append((indent, value))
+        else:
+            parent[key] = _parse_scalar(raw_value.strip())
+    return root
+
+
+def _parse_scalar(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        try:
+            return int(value)
+        except ValueError:
+            try:
+                return float(value)
+            except ValueError:
+                return value

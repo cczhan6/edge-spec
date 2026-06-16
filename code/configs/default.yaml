@@ -1,0 +1,114 @@
+simulation:
+  seed: 42
+  num_requests: 200
+  num_devices: 8
+  output_len_choices: [64, 128, 256]
+  request_arrival: burst
+  poisson_rate_per_s: 20
+
+edge:
+  num_lanes: 4
+  lane_microbatch: false
+  verify_startup_ms: 8
+  target_only_startup_ms: 0
+  target_only_token_rate_tok_s: 80
+
+model_runner:
+  target_model: Qwen/Qwen2.5-7B-Instruct
+  target_device: "cuda:1"
+  drafter_models:
+    small:
+      model: Qwen/Qwen2.5-0.5B-Instruct
+      device: "cuda:0"
+    medium:
+      model: Qwen/Qwen2.5-1.5B-Instruct
+      device: "cuda:0"
+    large:
+      model: Qwen/Qwen2.5-3B-Instruct
+      device: "cuda:0"
+
+drafter_profiles:
+  small:
+    acceptance_prior: 0.45
+  medium:
+    acceptance_prior: 0.65
+  large:
+    acceptance_prior: 0.82
+
+device_pools:
+  heterogeneous:
+    templates:
+      low_end:
+        count: 3
+        drafter_profile: small
+        draft_token_rate_tok_s: 500
+        draft_startup_ms: 1
+        uplink_mbps: 100
+        downlink_mbps: 300
+        rtt_ms: 20
+        jitter_ms: 1
+      mid_end:
+        count: 3
+        drafter_profile: medium
+        draft_token_rate_tok_s: 200
+        draft_startup_ms: 2
+        uplink_mbps: 100
+        downlink_mbps: 300
+        rtt_ms: 20
+        jitter_ms: 1
+      high_end:
+        count: 2
+        drafter_profile: large
+        draft_token_rate_tok_s: 111.111
+        draft_startup_ms: 3
+        uplink_mbps: 100
+        downlink_mbps: 300
+        rtt_ms: 20
+        jitter_ms: 1
+  medium_only:
+    templates:
+      medium:
+        count: 8
+        drafter_profile: medium
+        draft_token_rate_tok_s: 200
+        draft_startup_ms: 2
+        uplink_mbps: 100
+        downlink_mbps: 300
+        rtt_ms: 20
+        jitter_ms: 1
+
+speculation:
+  W_default: 2
+  W_max: 4
+  gamma_candidates: [1, 2, 4, 6, 8]
+  gamma_fixed: 4
+  acceptance_window_rounds: 8
+
+network:
+  packet_token_bytes: 4
+  packet_header_bytes: 128
+
+sync_batch:
+  B_global: 8
+  global_batch_timeout_ms: 20
+
+server_only:
+  drafter_profile: medium
+  draft_startup_ms: 2
+  # RTX 4090 Ollama benchmark for qwen2.5:1.5b: mean eval rate
+  # across five prompts is ~503.9 tok/s, rounded to 504.
+  draft_token_rate_tok_s: 504
+
+specedge:
+  max_n_beams: 32
+  max_beam_len: 4
+  max_branch_width: 16
+  max_budget: 32
+  pipeline_aware_scheduling: true
+  proactive_enabled: true
+  proactive_type: excluded
+  proactive_max_beam_len: 3
+  proactive_max_budget: 32
+  server_batch_type: static
+  server_batch_size: 1
+  server_batch_timeout_ms: null

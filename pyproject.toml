@@ -1,9 +1,0 @@
-[project]
-name = "edge-spec"
-version = "0.1.0"
-description = "Three-device edge speculative decoding experiments."
-requires-python = ">=3.10"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
