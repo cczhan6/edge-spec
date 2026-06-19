@@ -148,6 +148,7 @@ SEGMENT_FIELDS = [
     "scheduled_gamma",
     "verify_gamma",
     "accepted_count",
+    "proposed_count",
     "emitted_count",
     "acceptance_rate",
     "bonus_reused",
@@ -164,8 +165,14 @@ SEGMENT_FIELDS = [
     "verify_compute_ms",
     "downlink_delay_ms",
     "downlink_payload_bytes",
+    "tree_strategy",
     "tree_budget_nodes",
+    "draft_compute_nodes",
+    "processed_candidate_count",
+    "retained_tree_nodes",
+    "target_verify_tree_nodes",
     "beam_len",
+    "tree_path_switched",
     "proactive_used",
     "proactive_hit",
     "proactive_wasted_tokens",
@@ -191,6 +198,7 @@ EVENT_FIELDS = [
     "scheduled_gamma",
     "verify_gamma",
     "accepted_count",
+    "proposed_count",
     "emitted_count",
     "start_time_ms",
     "finish_time_ms",
@@ -200,7 +208,13 @@ EVENT_FIELDS = [
     "uplink_payload_bytes",
     "downlink_ms",
     "downlink_payload_bytes",
+    "tree_strategy",
     "tree_budget_nodes",
+    "draft_compute_nodes",
+    "processed_candidate_count",
+    "retained_tree_nodes",
+    "target_verify_tree_nodes",
+    "tree_path_switched",
     "pipeline_target_ms",
     "pipeline_edge_cycle_ms",
     "pipeline_alignment_error_ms",
@@ -276,7 +290,7 @@ def summarize(result: SimulationResult, num_devices: int) -> tuple[dict[str, Any
         *[segment.downlink_delay_ms for segment in result.segments if segment.downlink_payload_bytes],
         *[request.target_only_downlink_ms for request in result.requests if request.target_only_downlink_ms],
     ]
-    proposed = sum(segment.gamma for segment in result.segments if segment.accepted_count is not None)
+    proposed = sum(segment.proposed_count for segment in result.segments if segment.accepted_count is not None)
     accepted = sum(int(segment.accepted_count or 0) for segment in result.segments)
     selected_gammas = [
         gamma for runtime in result.devices for gamma in runtime.selected_gammas
@@ -381,7 +395,7 @@ def category_rows(result: SimulationResult, num_devices: int) -> list[dict[str, 
         finishes = [float(request.finish_time_ms) for request in requests]
         makespan_ms = max(finishes) - min(starts)
         goodput_tokens = sum(len(request.generated_ids) for request in requests)
-        proposed = sum(segment.gamma for segment in segments if segment.accepted_count is not None)
+        proposed = sum(segment.proposed_count for segment in segments if segment.accepted_count is not None)
         accepted = sum(int(segment.accepted_count or 0) for segment in segments)
         selected_gammas = [segment.scheduled_gamma for segment in segments]
         row = {
@@ -469,6 +483,7 @@ def segment_rows(result: SimulationResult) -> list[dict[str, Any]]:
             "scheduled_gamma": segment.scheduled_gamma,
             "verify_gamma": segment.verify_gamma,
             "accepted_count": segment.accepted_count,
+            "proposed_count": segment.proposed_count,
             "emitted_count": segment.emitted_count,
             "acceptance_rate": segment.acceptance_rate,
             "bonus_reused": segment.bonus_reused,
@@ -485,8 +500,14 @@ def segment_rows(result: SimulationResult) -> list[dict[str, Any]]:
             "verify_compute_ms": segment.verify_compute_ms,
             "downlink_delay_ms": segment.downlink_delay_ms,
             "downlink_payload_bytes": segment.downlink_payload_bytes,
+            "tree_strategy": segment.tree_strategy,
             "tree_budget_nodes": segment.tree_budget_nodes,
+            "draft_compute_nodes": segment.draft_compute_nodes,
+            "processed_candidate_count": segment.processed_candidate_count,
+            "retained_tree_nodes": segment.retained_tree_nodes,
+            "target_verify_tree_nodes": segment.target_verify_tree_nodes,
             "beam_len": segment.beam_len,
+            "tree_path_switched": segment.tree_path_switched,
             "proactive_used": segment.proactive_used,
             "proactive_hit": segment.proactive_hit,
             "proactive_wasted_tokens": segment.proactive_wasted_tokens,

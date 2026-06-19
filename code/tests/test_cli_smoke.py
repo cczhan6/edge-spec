@@ -83,6 +83,7 @@ class CliSmokeTest(unittest.TestCase):
                     "DATASET": "data/spec_bench/question.jsonl",
                     "RUN_ROOT": str(root / "runs"),
                     "SUMMARY_ONLY": "1",
+                    "TREE_DRAFT_STRATEGY": "linear",
                 }
             )
 
@@ -109,8 +110,53 @@ class CliSmokeTest(unittest.TestCase):
             self.assertIn('command: "bash scripts/run.sh smoke"', manifest)
             self.assertIn('use_fake_model_runner: true', manifest)
             self.assertIn('summary_only: true', manifest)
+            self.assertIn('tree_draft_strategy: "linear"', manifest)
             self.assertIn('  - "balanced_drafter"', manifest)
             self.assertIn('  - "full"', manifest)
+
+    def test_tree_draft_strategy_cli_override_disables_tree_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.yaml"
+            config.write_text(
+                Path("configs/default.yaml")
+                .read_text()
+                .replace("num_requests: 200", "num_requests: 2")
+                .replace("output_len_choices: [64, 128, 256]", "output_len_choices: [4]"),
+                encoding="utf-8",
+            )
+            output = root / "raw"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "scripts.run_all",
+                    "--config",
+                    str(config),
+                    "--use-fake-model-runner",
+                    "--scenario",
+                    "smoke",
+                    "--method",
+                    "SpecEdge",
+                    "--tree-draft-strategy",
+                    "linear",
+                    "--out_dir",
+                    str(output),
+                    "--summary_out",
+                    str(root / "summary.csv"),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertIn("metrics: SpecEdge", completed.stderr)
+            with (output / "segment_details_smoke_SpecEdge.csv").open(encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertTrue(rows)
+            self.assertTrue(all(row["tree_strategy"] == "linear" for row in rows))
+            self.assertTrue(all(int(row["target_verify_tree_nodes"]) <= 1 for row in rows))
 
     def test_summary_only_skips_per_method_detail_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

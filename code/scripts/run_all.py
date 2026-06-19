@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from src.config import load_config
+from src.config import apply_tree_draft_strategy, load_config
 from src.methods import DEFAULT_METHODS, SUPPORTED_METHODS
 from src.metrics import (
     CATEGORY_MAIN_FIELDS,
@@ -48,11 +48,12 @@ def run_experiments(
     use_fake_model_runner: bool = False,
     samples_per_category: int | None = None,
     write_details: bool = True,
+    tree_draft_strategy: str | None = None,
 ) -> list[dict]:
     if single_out and (len(scenarios) != 1 or len(methods) != 1):
         raise ValueError("--out requires exactly one scenario and one method")
     model_runner = build_model_runner(
-        load_config(config_path),
+        apply_tree_draft_strategy(load_config(config_path), tree_draft_strategy),
         use_fake_model_runner=use_fake_model_runner,
     )
     raw_dir = Path(out_dir)
@@ -64,7 +65,10 @@ def run_experiments(
         print(f"\nscenario: {scenario}", file=progress_stream)
         print(f"method order: {' -> '.join(methods)}", file=progress_stream)
         progress_stream.flush()
-        config = load_config(config_path, scenario)
+        config = apply_tree_draft_strategy(
+            load_config(config_path, scenario),
+            tree_draft_strategy,
+        )
         workload = load_workload(
             dataset_path,
             int(config["simulation"]["num_requests"]),
@@ -246,6 +250,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-fake-oracle", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--samples-per-category", type=int)
     parser.add_argument(
+        "--tree-draft-strategy",
+        choices=("linear", "specexec", "specexec_approx"),
+        help="Override SpecEdge/server_only tree drafting strategy for this run.",
+    )
+    parser.add_argument(
         "--summary-only",
         action="store_true",
         help="Write only scenario/category/system summaries and skip per-method detail CSVs.",
@@ -268,6 +277,7 @@ def main() -> None:
         use_fake_model_runner=args.use_fake_model_runner or args.use_fake_oracle,
         samples_per_category=args.samples_per_category,
         write_details=not args.summary_only,
+        tree_draft_strategy=args.tree_draft_strategy,
     )
     print(f"wrote {len(rows)} method rows")
 

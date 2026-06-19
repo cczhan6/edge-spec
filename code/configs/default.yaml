@@ -94,12 +94,20 @@ sync_batch:
 
 server_only:
   drafter_profile: medium
+  tree_draft_strategy: specexec_approx
+  max_n_beams: 32
+  max_beam_len: 4
+  max_branch_width: 16
+  max_budget: 64
   draft_startup_ms: 2
   # RTX 4090 Ollama benchmark for qwen2.5:1.5b: mean eval rate
   # across five prompts is ~503.9 tok/s, rounded to 504.
   draft_token_rate_tok_s: 504
 
 specedge:
+  # Default experiments use the SpecExec-style tree baseline. Override with
+  # TREE_DRAFT_STRATEGY=linear for the linear approximation.
+  tree_draft_strategy: specexec_approx
   max_n_beams: 32
   max_beam_len: 4
   max_branch_width: 16
@@ -107,6 +115,7 @@ specedge:
   pipeline_aware_scheduling: true
   proactive_enabled: true
   proactive_type: excluded
+  proactive_tree_draft_strategy: specexec_approx
   proactive_max_beam_len: 3
   proactive_max_budget: 32
   server_batch_type: static

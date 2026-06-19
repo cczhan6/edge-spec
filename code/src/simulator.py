@@ -3,6 +3,7 @@ from __future__ import annotations
 import heapq
 import itertools
 import random
+from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from src.communication import network_delay_ms
@@ -27,8 +28,26 @@ from src.latency import (
 )
 from src.methods import MethodSpec, get_method_spec
 from src.scheduler import LaneScheduler
-from src.model_runner import ModelRunner, SemanticVerifyInput, VerificationResult
+from src.model_runner import (
+    DraftCandidateTree,
+    ModelRunner,
+    SemanticTreeVerifyInput,
+    SemanticVerifyInput,
+    VerificationResult,
+    concat_linear_prefix_tree,
+    rebase_draft_tree,
+)
+from src.tree_drafting import DraftTreePlan, build_tree_draft_strategy
 from src.workload import WorkloadItem
+
+
+@dataclass(frozen=True)
+class _DraftBuild:
+    draft_ids: list[int]
+    draft_tree: DraftCandidateTree | None
+    processed_candidate_count: int
+    retained_tree_nodes: int
+    target_verify_tree_nodes: int
 
 
 class Simulator:
@@ -81,6 +100,13 @@ class Simulator:
         self._phase_waiting_time_ms = 0.0
         self._lane_queue_wait_times_ms: list[float] = []
         self._trace: list[dict[str, Any]] = []
+        self._specedge_tree_strategy = build_tree_draft_strategy(config, "specedge")
+        self._server_only_tree_strategy = build_tree_draft_strategy(config, "server_only")
+        self._proactive_tree_strategy = build_tree_draft_strategy(
+            config,
+            "specedge",
+            proactive=True,
+        )
         self._last_specedge_verify_ms = self._initial_specedge_verify_ms()
         self._pipeline_idle_bubble_ms = 0.0
 
@@ -122,7 +148,7 @@ class Simulator:
         return max([self._batch_busy_until_ms, *buffered_arrivals], default=self._batch_busy_until_ms)
 
     def predict_verify_latency_ms(self, gamma: int) -> float:
-        return verify_latency_ms(self.config["edge"], [gamma])
+        return verify_latency_ms(self.config["edge"], [1])
 
     def _is_specedge_runtime(self) -> bool:
         return self.spec.runtime in {"specedge", "server_only_specedge"}
@@ -153,7 +179,7 @@ class Simulator:
         return float(self.config["sync_batch"]["global_batch_timeout_ms"])
 
     def _specedge_max_beam_len(self) -> int:
-        return int(self.config["specedge"]["max_beam_len"])
+        return self._specedge_tree_strategy.max_beam_len
 
     def _specedge_proactive_type(self) -> str:
         return str(self.config["specedge"].get("proactive_type", "excluded"))
@@ -174,21 +200,101 @@ class Simulator:
         if not self._is_specedge_runtime():
             return 0.0
         batch_size = max(1, self._global_batch_size())
-        budget = self._specedge_max_beam_len()
-        return verify_latency_ms(self.config["edge"], [budget for _ in range(batch_size)])
+        strategy = (
+            self._server_only_tree_strategy
+            if self._is_server_only_runtime()
+            else self._specedge_tree_strategy
+        )
+        target_verify_nodes = strategy.plan(strategy.max_beam_len).target_verify_nodes
+        return verify_latency_ms(
+            self.config["edge"],
+            [target_verify_nodes for _ in range(batch_size)],
+        )
+
+    def _specedge_tree_plan(self, beam_len: int) -> DraftTreePlan:
+        return self._specedge_tree_strategy.plan(beam_len)
+
+    def _server_only_tree_plan(self, beam_len: int) -> DraftTreePlan:
+        return self._server_only_tree_strategy.plan(beam_len)
+
+    def _proactive_tree_plan(self, beam_len: int) -> DraftTreePlan:
+        return self._proactive_tree_strategy.plan(beam_len)
 
     def _specedge_tree_budget_nodes(self, beam_len: int) -> int:
-        return max(1, beam_len)
+        return self._specedge_tree_plan(beam_len).tree_budget_nodes
+
+    def _draft_for_plan(
+        self,
+        drafter_profile: str,
+        prefix_ids: Sequence[int],
+        plan: DraftTreePlan,
+    ) -> _DraftBuild:
+        if plan.strategy == "linear":
+            draft_ids = self.model_runner.draft(
+                drafter_profile,
+                prefix_ids,
+                plan.path_token_count,
+            )
+            return _DraftBuild(
+                draft_ids=list(draft_ids),
+                draft_tree=None,
+                processed_candidate_count=len(draft_ids),
+                retained_tree_nodes=len(draft_ids),
+                target_verify_tree_nodes=1 if draft_ids else 0,
+            )
+        draft_tree = self.model_runner.draft_tree(drafter_profile, prefix_ids, plan)
+        return _DraftBuild(
+            draft_ids=list(draft_tree.primary_ids),
+            draft_tree=draft_tree,
+            processed_candidate_count=draft_tree.processed_candidate_count,
+            retained_tree_nodes=draft_tree.retained_tree_nodes,
+            target_verify_tree_nodes=draft_tree.target_verify_tree_nodes,
+        )
+
+    def _verify_segment(self, segment: Segment) -> VerificationResult:
+        if segment.draft_tree is not None:
+            return self.model_runner.verify_tree(segment.prefix_ids, segment.draft_tree)
+        if segment.tree_strategy != "linear":
+            raise RuntimeError("tree draft segment is missing its draft tree")
+        return self.model_runner.verify(segment.prefix_ids, segment.draft_ids)
+
+    def _verify_segments(self, segments: Sequence[Segment]) -> list[VerificationResult]:
+        missing_tree = [
+            segment for segment in segments
+            if segment.tree_strategy != "linear" and segment.draft_tree is None
+        ]
+        if missing_tree:
+            raise RuntimeError("tree draft segment is missing its draft tree")
+        tree_segments = [segment for segment in segments if segment.draft_tree is not None]
+        if tree_segments and len(tree_segments) != len(segments):
+            raise RuntimeError("linear and tree draft segments must not share one verify batch")
+        if tree_segments:
+            return self.model_runner.verify_tree_batch(
+                [
+                    SemanticTreeVerifyInput(
+                        segment.prefix_ids,
+                        segment.draft_tree,
+                    )
+                    for segment in segments
+                    if segment.draft_tree is not None
+                ]
+            )
+        return self.model_runner.verify_batch(
+            [SemanticVerifyInput(segment.prefix_ids, segment.draft_ids) for segment in segments]
+        )
 
     def _segment_payload_tokens(self, segment: Segment) -> int:
         if self._is_specedge_runtime():
-            return segment.tree_budget_nodes
+            return segment.retained_tree_nodes or segment.tree_budget_nodes
         return segment.gamma
 
     def _verify_latency_for_segments(self, segments: Sequence[Segment]) -> float:
         if self._is_specedge_runtime():
-            return verify_latency_ms(self.config["edge"], [segment.tree_budget_nodes for segment in segments])
-        return verify_latency_ms(self.config["edge"], [segment.verify_gamma for segment in segments])
+            return verify_latency_ms(
+                self.config["edge"],
+                [segment.target_verify_tree_nodes for segment in segments],
+            )
+        return verify_latency_ms(self.config["edge"], [1 for _ in segments])
 
     def _server_only_draft_latency_ms(self, token_count: int) -> float:
         if token_count <= 0:
@@ -382,14 +488,25 @@ class Simulator:
         prefix_ids = request.prompt_ids + request.generated_ids
         gamma = min(
             self._select_gamma(request, device, now_ms, remaining),
-            self._specedge_max_beam_len(),
+            self._server_only_tree_strategy.max_beam_len,
             remaining,
         )
         drafter_profile = self._server_only_drafter_profile()
-        draft_ids = self.model_runner.draft(drafter_profile, prefix_ids, gamma)
+        tree_plan = self._server_only_tree_plan(gamma)
+        draft_build = self._draft_for_plan(
+            drafter_profile,
+            prefix_ids,
+            tree_plan,
+        )
+        draft_ids = draft_build.draft_ids
         if not draft_ids:
             raise RuntimeError("semantic drafter returned an empty server_only segment")
-        draft_ms = self._server_only_draft_latency_ms(len(draft_ids))
+        if tree_plan.path_token_count != len(draft_ids):
+            tree_plan = self._server_only_tree_plan(len(draft_ids))
+        processed_candidates = draft_build.processed_candidate_count
+        retained_nodes = draft_build.retained_tree_nodes
+        target_verify_nodes = draft_build.target_verify_tree_nodes
+        draft_ms = self._server_only_draft_latency_ms(processed_candidates)
         segment = Segment(
             segment_id=len(self.segments),
             request_id=request.request_id,
@@ -404,14 +521,20 @@ class Simulator:
             draft_start_time_ms=now_ms,
             draft_compute_ms=draft_ms,
             draft_analytical_ms=draft_ms,
-            tree_budget_nodes=len(draft_ids),
+            tree_strategy=tree_plan.strategy,
+            tree_budget_nodes=retained_nodes,
+            draft_compute_nodes=processed_candidates,
+            processed_candidate_count=processed_candidates,
+            retained_tree_nodes=retained_nodes,
+            target_verify_tree_nodes=target_verify_nodes,
             beam_len=len(draft_ids),
+            draft_tree=draft_build.draft_tree,
         )
         self.segments.append(segment)
         request.pending_segments[segment.base_pos] = segment.segment_id
         request.in_flight_segments.append(segment.segment_id)
         runtime = self.device_runtimes[request.device_id]
-        runtime.generated_draft_tokens += len(draft_ids)
+        runtime.generated_draft_tokens += segment.proposed_count
         runtime.selected_gammas.append(len(draft_ids))
         self._trace.append(
             {
@@ -428,6 +551,11 @@ class Simulator:
                 "finish_time_ms": now_ms + draft_ms,
                 "compute_ms": draft_ms,
                 "tree_budget_nodes": segment.tree_budget_nodes,
+                "draft_compute_nodes": segment.draft_compute_nodes,
+                "processed_candidate_count": segment.processed_candidate_count,
+                "retained_tree_nodes": segment.retained_tree_nodes,
+                "target_verify_tree_nodes": segment.target_verify_tree_nodes,
+                "tree_strategy": segment.tree_strategy,
             }
         )
         self._schedule(now_ms + draft_ms, EventType.SERVER_ONLY_DRAFT_DONE, segment.segment_id)
@@ -458,7 +586,7 @@ class Simulator:
             if segment.status not in FINAL_SEGMENT_STATUSES:
                 self._stale_segment(segment)
             return
-        result = self.model_runner.verify(segment.prefix_ids, segment.draft_ids)
+        result = self._verify_segment(segment)
         duration_ms = self._verify_latency_for_segments([segment])
         start_ms = max(now_ms, self._server_only_verify_available_ms)
         finish_ms = start_ms + duration_ms
@@ -485,6 +613,11 @@ class Simulator:
                 "compute_ms": duration_ms,
                 "queue_wait_ms": start_ms - now_ms,
                 "tree_budget_nodes": segment.tree_budget_nodes,
+                "draft_compute_nodes": segment.draft_compute_nodes,
+                "processed_candidate_count": segment.processed_candidate_count,
+                "retained_tree_nodes": segment.retained_tree_nodes,
+                "target_verify_tree_nodes": segment.target_verify_tree_nodes,
+                "tree_strategy": segment.tree_strategy,
             }
         )
 
@@ -580,53 +713,120 @@ class Simulator:
             and request.proactive_prefix_version == request.prefix_version
         )
         retained_proactive_ids: list[int] = []
+        draft_tree: DraftCandidateTree | None = None
+        fresh_build: _DraftBuild | None = None
         if use_proactive:
+            retained_proactive_tree = request.proactive_draft_tree
             retained_limit = min(
                 len(request.proactive_draft_ids),
                 remaining,
-                int(self.config["specedge"]["max_budget"]),
+                self._specedge_tree_strategy.max_budget,
             )
             retained_proactive_ids = request.proactive_draft_ids[:retained_limit]
             self._clear_proactive(request)
             if self._specedge_proactive_type() == "included":
-                fresh_budget = max(0, gamma - int(self.config["specedge"]["proactive_max_beam_len"]))
+                fresh_budget = max(0, gamma - self._proactive_tree_strategy.max_beam_len)
             else:
                 fresh_budget = gamma
             fresh_budget = min(
                 fresh_budget,
                 remaining - len(retained_proactive_ids),
-                int(self.config["specedge"]["max_budget"]) - len(retained_proactive_ids),
+                self._specedge_tree_strategy.max_budget - len(retained_proactive_ids),
             )
-            fresh_ids = (
-                self.model_runner.draft(
+            if fresh_budget > 0:
+                fresh_build = self._draft_for_plan(
                     runtime.device.drafter_profile,
                     prefix_ids + retained_proactive_ids,
-                    fresh_budget,
+                    self._specedge_tree_plan(fresh_budget),
                 )
-                if fresh_budget > 0
-                else []
-            )
+                fresh_ids = fresh_build.draft_ids
+            else:
+                fresh_ids = []
             draft_ids = retained_proactive_ids + fresh_ids
+            if fresh_build is not None and fresh_build.draft_tree is not None:
+                draft_tree = concat_linear_prefix_tree(
+                    prefix_ids,
+                    retained_proactive_ids,
+                    fresh_build.draft_tree,
+                )
+            elif (
+                retained_proactive_tree is not None
+                and retained_proactive_tree.primary_ids == retained_proactive_ids
+            ):
+                draft_tree = retained_proactive_tree
+            else:
+                draft_tree = None
         else:
             self._clear_proactive(request)
-            draft_ids = self.model_runner.draft(runtime.device.drafter_profile, prefix_ids, gamma)
+            if self.spec.runtime == "specedge":
+                draft_build = self._draft_for_plan(
+                    runtime.device.drafter_profile,
+                    prefix_ids,
+                    self._specedge_tree_plan(gamma),
+                )
+                draft_ids = draft_build.draft_ids
+                draft_tree = draft_build.draft_tree
+                fresh_build = draft_build
+            else:
+                draft_ids = self.model_runner.draft(runtime.device.drafter_profile, prefix_ids, gamma)
+                fresh_build = _DraftBuild(
+                    draft_ids=list(draft_ids),
+                    draft_tree=None,
+                    processed_candidate_count=len(draft_ids),
+                    retained_tree_nodes=len(draft_ids),
+                    target_verify_tree_nodes=1 if draft_ids else 0,
+                )
             fresh_ids = draft_ids
         if not draft_ids:
             raise RuntimeError("semantic drafter returned an empty segment")
-        analytical_ms = draft_latency_ms(runtime.device, len(draft_ids))
-        fresh_compute_ms = draft_latency_ms(runtime.device, len(fresh_ids)) if fresh_ids else 0.0
+        beam_len = len(draft_ids)
+        tree_plan = (
+            self._specedge_tree_plan(beam_len)
+            if self.spec.runtime == "specedge"
+            else DraftTreePlan(
+                strategy="linear",
+                path_token_count=beam_len,
+                tree_budget_nodes=beam_len,
+                draft_compute_nodes=beam_len,
+                target_verify_nodes=1 if beam_len else 0,
+                max_n_beams=1,
+                max_beam_len=beam_len,
+                max_branch_width=1,
+                max_budget=beam_len,
+            )
+        )
+        processed_candidates = (
+            draft_tree.processed_candidate_count
+            if draft_tree is not None
+            else beam_len
+        )
+        retained_nodes = (
+            draft_tree.retained_tree_nodes
+            if draft_tree is not None
+            else beam_len
+        )
+        target_verify_nodes = (
+            draft_tree.target_verify_tree_nodes
+            if draft_tree is not None
+            else 1
+        )
+        fresh_processed_candidates = (
+            fresh_build.processed_candidate_count
+            if use_proactive and fresh_build is not None
+            else processed_candidates
+        )
+        analytical_ms = draft_latency_ms(runtime.device, processed_candidates)
+        fresh_compute_ms = (
+            draft_latency_ms(runtime.device, fresh_processed_candidates)
+            if fresh_ids
+            else 0.0
+        )
         duration_ms = (
             fresh_compute_ms
             if use_proactive
             else max(0.0, analytical_ms - request.overlap_credit_ms)
         )
         request.overlap_credit_ms = max(0.0, request.overlap_credit_ms - analytical_ms)
-        beam_len = len(draft_ids)
-        tree_budget_nodes = (
-            self._specedge_tree_budget_nodes(beam_len)
-            if self.spec.runtime == "specedge"
-            else beam_len
-        )
         pipeline_target_ms = 0.0
         pipeline_edge_cycle_ms = 0.0
         pipeline_alignment_error_ms = 0.0
@@ -637,7 +837,7 @@ class Simulator:
                 runtime.device,
                 beam_len,
                 expected_emitted_tokens(alpha, beam_len),
-            ) - draft_latency_ms(runtime.device, beam_len)
+            ) - draft_latency_ms(runtime.device, processed_candidates)
             pipeline_edge_cycle_ms = duration_ms + network_cycle_ms
             pipeline_alignment_error_ms = abs(pipeline_target_ms - pipeline_edge_cycle_ms)
         segment = Segment(
@@ -655,8 +855,14 @@ class Simulator:
             draft_queue_wait_ms=now_ms - queued_at_ms,
             draft_compute_ms=duration_ms,
             draft_analytical_ms=analytical_ms,
-            tree_budget_nodes=tree_budget_nodes,
+            tree_strategy=tree_plan.strategy,
+            tree_budget_nodes=retained_nodes,
+            draft_compute_nodes=processed_candidates,
+            processed_candidate_count=processed_candidates,
+            retained_tree_nodes=retained_nodes,
+            target_verify_tree_nodes=target_verify_nodes,
             beam_len=beam_len,
+            draft_tree=draft_tree,
             proactive_used=use_proactive,
             pipeline_target_ms=pipeline_target_ms,
             pipeline_edge_cycle_ms=pipeline_edge_cycle_ms,
@@ -673,7 +879,7 @@ class Simulator:
         runtime.busy_until_ms = now_ms + duration_ms
         runtime.total_queue_wait_ms += segment.draft_queue_wait_ms
         runtime.total_busy_time_ms += duration_ms
-        runtime.generated_draft_tokens += len(draft_ids)
+        runtime.generated_draft_tokens += segment.proposed_count
         runtime.selected_gammas.append(beam_len)
         self._trace.append(
             {
@@ -691,6 +897,11 @@ class Simulator:
                 "compute_ms": duration_ms,
                 "queue_wait_ms": segment.draft_queue_wait_ms,
                 "tree_budget_nodes": segment.tree_budget_nodes,
+                "draft_compute_nodes": segment.draft_compute_nodes,
+                "processed_candidate_count": segment.processed_candidate_count,
+                "retained_tree_nodes": segment.retained_tree_nodes,
+                "target_verify_tree_nodes": segment.target_verify_tree_nodes,
+                "tree_strategy": segment.tree_strategy,
                 "pipeline_target_ms": pipeline_target_ms,
                 "pipeline_edge_cycle_ms": pipeline_edge_cycle_ms,
                 "pipeline_alignment_error_ms": pipeline_alignment_error_ms,
@@ -714,6 +925,11 @@ class Simulator:
                     "finish_time_ms": now_ms + duration_ms,
                     "compute_ms": duration_ms,
                     "tree_budget_nodes": segment.tree_budget_nodes,
+                    "draft_compute_nodes": segment.draft_compute_nodes,
+                    "processed_candidate_count": segment.processed_candidate_count,
+                    "retained_tree_nodes": segment.retained_tree_nodes,
+                    "target_verify_tree_nodes": segment.target_verify_tree_nodes,
+                    "tree_strategy": segment.tree_strategy,
                     "pipeline_target_ms": pipeline_target_ms,
                     "pipeline_edge_cycle_ms": pipeline_edge_cycle_ms,
                     "pipeline_alignment_error_ms": pipeline_alignment_error_ms,
@@ -746,8 +962,10 @@ class Simulator:
         remaining: int,
     ) -> int:
         fixed = min(int(self.config["speculation"]["gamma_fixed"]), remaining)
+        if self.spec.runtime == "specedge":
+            return max(1, min(self._specedge_tree_strategy.max_beam_len, remaining))
         if self._is_server_only_runtime():
-            return max(1, min(self._specedge_max_beam_len(), remaining))
+            return max(1, min(self._server_only_tree_strategy.max_beam_len, remaining))
         if not self.spec.adaptive_gamma:
             return max(1, fixed)
         candidates = sorted(
@@ -765,18 +983,6 @@ class Simulator:
             else device.acceptance_prior
         )
         alpha = self.acceptance.estimate(request.request_id, acceptance_prior)
-        if self.spec.runtime == "specedge":
-            candidates = [min(candidate, self._specedge_max_beam_len()) for candidate in candidates]
-            candidates = sorted({candidate for candidate in candidates if candidate > 0})
-            return self._select_specedge_pipeline_gamma(
-                request,
-                device,
-                now_ms,
-                remaining,
-                candidates,
-                alpha,
-            )
-
         def score(gamma: int) -> tuple[float, int]:
             emitted = expected_emitted_tokens(alpha, gamma)
             uplink_ms = 0.0
@@ -810,33 +1016,15 @@ class Simulator:
 
         return max(candidates, key=score)
 
-    def _select_specedge_pipeline_gamma(
-        self,
-        request: Request,
-        device: Device,
-        now_ms: float,
-        remaining: int,
-        candidates: Sequence[int],
-        alpha: float,
-    ) -> int:
-        target_ms = self._specedge_pipeline_target_ms(now_ms)
-
-        def score(gamma: int) -> tuple[float, float, int]:
-            emitted = expected_emitted_tokens(alpha, gamma)
-            edge_cycle_ms = self._specedge_edge_cycle_ms(device, gamma, emitted)
-            alignment_error_ms = abs(target_ms - edge_cycle_ms)
-            return (alignment_error_ms, -emitted, gamma)
-
-        return min(candidates, key=score)
-
     def _specedge_pipeline_target_ms(self, now_ms: float) -> float:
         server_busy_gap_ms = max(0.0, self._batch_busy_until_ms - now_ms)
         return max(self._last_specedge_verify_ms, server_busy_gap_ms)
 
     def _specedge_edge_cycle_ms(self, device: Device, gamma: int, emitted_tokens: float) -> float:
+        tree_plan = self._specedge_tree_plan(gamma)
         uplink_ms = self._speculative_network_delay_ms(
             device,
-            gamma,
+            tree_plan.tree_budget_nodes,
             "uplink",
             f"pipeline-up:{device.device_id}:{gamma}",
         )
@@ -846,7 +1034,7 @@ class Simulator:
             "downlink",
             f"pipeline-down:{device.device_id}:{gamma}",
         )
-        return draft_latency_ms(device, gamma) + uplink_ms + downlink_ms
+        return draft_latency_ms(device, tree_plan.draft_compute_nodes) + uplink_ms + downlink_ms
 
     def _predicted_target_wait_ms(self, now_ms: float) -> float:
         if self._is_server_only_runtime():
@@ -969,7 +1157,7 @@ class Simulator:
                 if segment.status not in FINAL_SEGMENT_STATUSES:
                     self._stale_segment(segment)
                 continue
-            result = self.model_runner.verify(segment.prefix_ids, segment.draft_ids)
+            result = self._verify_segment(segment)
             duration_ms = self.predict_verify_latency_ms(segment.verify_gamma)
             self._verification_results[segment.segment_id] = result
             segment.status = "verifying"
@@ -999,6 +1187,12 @@ class Simulator:
                     "finish_time_ms": segment.verify_done_time_ms,
                     "compute_ms": duration_ms,
                     "queue_wait_ms": queue_wait_ms,
+                    "tree_budget_nodes": segment.tree_budget_nodes,
+                    "draft_compute_nodes": segment.draft_compute_nodes,
+                    "processed_candidate_count": segment.processed_candidate_count,
+                    "retained_tree_nodes": segment.retained_tree_nodes,
+                    "target_verify_tree_nodes": segment.target_verify_tree_nodes,
+                    "tree_strategy": segment.tree_strategy,
                 }
             )
             return
@@ -1090,9 +1284,7 @@ class Simulator:
             return False
         waiting_ms = sum(now_ms - float(segment.edge_arrival_time_ms) for segment in segments)
         self._batch_waiting_time_ms += waiting_ms
-        results = self.model_runner.verify_batch(
-            [SemanticVerifyInput(segment.prefix_ids, segment.draft_ids) for segment in segments]
-        )
+        results = self._verify_segments(segments)
         duration_ms = self._verify_latency_for_segments(segments)
         finish_ms = now_ms + duration_ms
         if self._is_specedge_runtime():
@@ -1117,6 +1309,11 @@ class Simulator:
                 "finish_time_ms": finish_ms,
                 "compute_ms": duration_ms,
                 "tree_budget_nodes": max(segment.tree_budget_nodes for segment in segments),
+                "draft_compute_nodes": max(segment.draft_compute_nodes for segment in segments),
+                "processed_candidate_count": max(segment.processed_candidate_count for segment in segments),
+                "retained_tree_nodes": max(segment.retained_tree_nodes for segment in segments),
+                "target_verify_tree_nodes": max(segment.target_verify_tree_nodes for segment in segments),
+                "tree_strategy": segments[0].tree_strategy,
                 "batch_type": self._specedge_server_batch_type() if self._is_specedge_runtime() else "timeout",
                 "pipeline_idle_bubble_ms": idle_bubble_ms if self._is_specedge_runtime() else 0.0,
             }
@@ -1166,13 +1363,24 @@ class Simulator:
         result_base_pos = segment.base_pos
         remaining = request.output_len - request.edge_frontier_pos
         emitted_ids = list(result.emitted_ids[:remaining])
+        accepted_path = list(result.emitted_ids[: result.accepted_count])
+        tree_path_switched = bool(
+            segment.draft_tree is not None
+            and accepted_path
+            and accepted_path != segment.draft_ids[: len(accepted_path)]
+        )
         request.pending_segments.pop(segment.base_pos, None)
         segment.result_base_pos = result_base_pos
         segment.accepted_count = result.accepted_count
         segment.emitted_ids = emitted_ids
+        segment.tree_path_switched = tree_path_switched
         request.accepted_tokens += result.accepted_count
         self.device_runtimes[segment.device_id].accepted_draft_tokens += result.accepted_count
-        self.acceptance.observe(request.request_id, result.accepted_count, segment.gamma)
+        self.acceptance.observe(
+            request.request_id,
+            result.accepted_count,
+            segment.proposed_count,
+        )
         request.edge_generated_ids.extend(emitted_ids)
         if result.rejected:
             segment.status = "rejected"
@@ -1185,8 +1393,19 @@ class Simulator:
             self._invalidate_pending(request)
         else:
             segment.status = "accepted"
-            self._resolve_proactive_after_accept(request, segment, result)
-            if result.bonus_token is not None and emitted_ids and emitted_ids[-1] == result.bonus_token:
+            if tree_path_switched:
+                request.prefix_version += 1
+                self._record_proactive_miss(request, segment)
+                self._clear_proactive(request)
+                self._invalidate_pending(request)
+            else:
+                self._resolve_proactive_after_accept(request, segment, result)
+            if (
+                not tree_path_switched
+                and result.bonus_token is not None
+                and emitted_ids
+                and emitted_ids[-1] == result.bonus_token
+            ):
                 self._retarget_after_bonus(request, segment, result.bonus_token)
         if request.edge_frontier_pos >= request.output_len:
             self._invalidate_pending(request)
@@ -1216,11 +1435,18 @@ class Simulator:
                 "scheduled_gamma": segment.scheduled_gamma,
                 "verify_gamma": segment.verify_gamma,
                 "accepted_count": segment.accepted_count,
+                "proposed_count": segment.proposed_count,
                 "emitted_count": segment.emitted_count,
                 "finish_time_ms": now_ms,
                 "downlink_ms": delay_ms,
                 "downlink_payload_bytes": payload_bytes,
                 "tree_budget_nodes": segment.tree_budget_nodes,
+                "draft_compute_nodes": segment.draft_compute_nodes,
+                "processed_candidate_count": segment.processed_candidate_count,
+                "retained_tree_nodes": segment.retained_tree_nodes,
+                "target_verify_tree_nodes": segment.target_verify_tree_nodes,
+                "tree_strategy": segment.tree_strategy,
+                "tree_path_switched": segment.tree_path_switched,
             }
         )
         result_arrival_ms = now_ms + delay_ms
@@ -1240,18 +1466,40 @@ class Simulator:
         if remaining_after_bonus <= 0:
             return
         proactive_len = min(
-            int(self.config["specedge"]["proactive_max_beam_len"]),
+            self._proactive_tree_strategy.max_beam_len,
             remaining_after_bonus + 1,
         )
-        proactive_prefix = segment.prefix_ids + segment.draft_ids
-        proactive_ids = self.model_runner.draft(
-            self.devices[segment.device_id].drafter_profile,
-            proactive_prefix,
-            proactive_len,
-        )
+        proactive_tree_plan = self._proactive_tree_plan(proactive_len)
+        if proactive_tree_plan.strategy == "linear":
+            proactive_ids = self.model_runner.draft(
+                self.devices[segment.device_id].drafter_profile,
+                segment.prefix_ids + segment.draft_ids,
+                proactive_tree_plan.path_token_count,
+            )
+            proactive_tree = None
+            processed_candidates = len(proactive_ids)
+            retained_nodes = len(proactive_ids)
+            target_verify_nodes = 1 if proactive_ids else 0
+            proposed_count = len(proactive_ids)
+        elif segment.draft_tree is None:
+            return
+        else:
+            proactive_tree = self.model_runner.draft_bonus_tree(
+                self.devices[segment.device_id].drafter_profile,
+                segment.draft_tree,
+                proactive_tree_plan,
+            )
+            proactive_ids = list(proactive_tree.primary_ids)
+            processed_candidates = proactive_tree.processed_candidate_count
+            retained_nodes = proactive_tree.retained_tree_nodes
+            target_verify_nodes = proactive_tree.target_verify_tree_nodes
+            proposed_count = _tree_proposed_count(proactive_tree, proactive_ids)
         if not proactive_ids:
             return
-        proactive_compute_ms = draft_latency_ms(self.devices[segment.device_id], len(proactive_ids))
+        proactive_compute_ms = draft_latency_ms(
+            self.devices[segment.device_id],
+            processed_candidates,
+        )
         runtime = self.device_runtimes[segment.device_id]
         if runtime.active_segment_id is not None:
             return
@@ -1259,9 +1507,10 @@ class Simulator:
         runtime.active_segment_id = segment.segment_id
         runtime.busy_until_ms = finish_ms
         runtime.total_busy_time_ms += proactive_compute_ms
-        runtime.generated_draft_tokens += len(proactive_ids)
+        runtime.generated_draft_tokens += proposed_count
         segment.proactive_used = True
         segment.proactive_draft_ids = proactive_ids
+        segment.proactive_draft_tree = proactive_tree
         segment.proactive_start_time_ms = start_ms
         segment.proactive_done_time_ms = finish_ms
         self._trace.append(
@@ -1278,7 +1527,12 @@ class Simulator:
                 "start_time_ms": start_ms,
                 "finish_time_ms": finish_ms,
                 "compute_ms": proactive_compute_ms,
-                "tree_budget_nodes": len(proactive_ids),
+                "tree_budget_nodes": retained_nodes,
+                "draft_compute_nodes": processed_candidates,
+                "processed_candidate_count": processed_candidates,
+                "retained_tree_nodes": retained_nodes,
+                "target_verify_tree_nodes": target_verify_nodes,
+                "tree_strategy": proactive_tree_plan.strategy,
             }
         )
         self._schedule(finish_ms, EventType.PROACTIVE_DRAFT_DONE, segment.segment_id)
@@ -1300,8 +1554,20 @@ class Simulator:
         if self.spec.runtime != "specedge" or not segment.proactive_draft_ids:
             return
         if result.bonus_token is not None and segment.proactive_draft_ids[0] == result.bonus_token:
+            proactive_tree = segment.proactive_draft_tree
+            if proactive_tree is not None:
+                accepted_prefix = segment.prefix_ids + list(result.emitted_ids[: result.accepted_count])
+                if proactive_tree.prefix_ids != accepted_prefix:
+                    self._record_proactive_miss(request, segment)
+                    self._clear_proactive(request)
+                    return
             segment.proactive_hit = True
             request.proactive_draft_ids = segment.proactive_draft_ids[1:]
+            request.proactive_draft_tree = (
+                rebase_draft_tree(proactive_tree, 1)
+                if proactive_tree is not None
+                else None
+            )
             request.proactive_base_pos = request.edge_frontier_pos
             request.proactive_prefix_version = request.prefix_version
             return
@@ -1316,6 +1582,7 @@ class Simulator:
 
     def _clear_proactive(self, request: Request) -> None:
         request.proactive_draft_ids = []
+        request.proactive_draft_tree = None
         request.proactive_base_pos = None
         request.proactive_prefix_version = None
 
@@ -1385,6 +1652,8 @@ class Simulator:
         segment.base_pos += 1
         segment.prefix_ids.append(bonus_token)
         segment.draft_ids.pop(0)
+        if segment.draft_tree is not None:
+            segment.draft_tree = rebase_draft_tree(segment.draft_tree, 1)
         segment.bonus_reused = True
         request.bonus_reused_tokens += 1
         if invalidate_descendants:
@@ -1524,15 +1793,16 @@ class Simulator:
     def _record_rejection_waste(self, segment: Segment) -> None:
         if segment.waste_recorded:
             return
-        self.requests[segment.request_id].wasted_draft_tokens += (
-            segment.gamma - int(segment.accepted_count or 0)
+        self.requests[segment.request_id].wasted_draft_tokens += max(
+            0,
+            segment.proposed_count - int(segment.accepted_count or 0),
         )
         segment.waste_recorded = True
 
     def _record_waste(self, segment: Segment) -> None:
         if segment.waste_recorded:
             return
-        self.requests[segment.request_id].wasted_draft_tokens += segment.gamma
+        self.requests[segment.request_id].wasted_draft_tokens += segment.proposed_count
         segment.waste_recorded = True
 
     def _payload_bytes(self, token_count: int) -> int:
@@ -1564,3 +1834,12 @@ class Simulator:
             key,
             payload_bytes,
         )
+
+
+def _tree_proposed_count(
+    draft_tree: DraftCandidateTree | None,
+    draft_ids: Sequence[int],
+) -> int:
+    if draft_tree is None or not draft_tree.nodes:
+        return len(draft_ids)
+    return max(len(draft_ids), max(node.depth for node in draft_tree.nodes))

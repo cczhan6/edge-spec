@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.config import load_config, validate_config
+from src.tree_drafting import build_tree_draft_strategy
 
 
 class ConfigTest(unittest.TestCase):
@@ -50,6 +51,48 @@ class ConfigTest(unittest.TestCase):
         config = load_config("configs/default.yaml")
         config["specedge"]["proactive_type"] = "eager"
         with self.assertRaisesRegex(ValueError, "proactive_type"):
+            validate_config(config)
+
+    def test_tree_draft_strategy_types_must_be_known(self) -> None:
+        config = load_config("configs/default.yaml")
+        config["specedge"]["tree_draft_strategy"] = "unknown"
+        with self.assertRaisesRegex(ValueError, "tree_draft_strategy"):
+            validate_config(config)
+        config = load_config("configs/default.yaml")
+        config["server_only"]["tree_draft_strategy"] = "unknown"
+        with self.assertRaisesRegex(ValueError, "server_only.tree_draft_strategy"):
+            validate_config(config)
+
+    def test_tree_draft_defaults_are_specexec_approx(self) -> None:
+        config = load_config("configs/default.yaml")
+
+        self.assertEqual(build_tree_draft_strategy(config, "specedge").name, "specexec_approx")
+        self.assertEqual(build_tree_draft_strategy(config, "server_only").name, "specexec_approx")
+        self.assertEqual(
+            build_tree_draft_strategy(config, "specedge", proactive=True).name,
+            "specexec_approx",
+        )
+
+    def test_legacy_specexec_name_maps_to_approximation(self) -> None:
+        config = load_config("configs/default.yaml")
+        config["specedge"]["tree_draft_strategy"] = "specexec"
+        validate_config(config)
+
+        self.assertEqual(
+            build_tree_draft_strategy(config, "specedge").name,
+            "specexec_approx",
+        )
+
+    def test_tree_budget_must_cover_beam_depth(self) -> None:
+        config = load_config("configs/default.yaml")
+        config["specedge"]["max_budget"] = config["specedge"]["max_beam_len"] - 1
+        config["specedge"]["proactive_max_budget"] = config["specedge"]["max_budget"]
+        with self.assertRaisesRegex(ValueError, "max_budget"):
+            validate_config(config)
+        config = load_config("configs/default.yaml")
+        config["server_only"]["max_beam_len"] = 4
+        config["server_only"]["max_budget"] = 3
+        with self.assertRaisesRegex(ValueError, "server_only.max_budget"):
             validate_config(config)
 
 

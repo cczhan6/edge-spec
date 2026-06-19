@@ -48,7 +48,7 @@ def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
     if name == "sync_batch_sd":
         return MethodSpec(name, "sync", "heterogeneous", 1, 0, True, "global_batch", "fine_grained", global_batch=True, batch_timeout=True)
     if name == "SpecEdge":
-        return MethodSpec(name, "specedge", "heterogeneous", 1, 0, True, "global_batch", "fine_grained", global_batch=True, batch_timeout=True)
+        return MethodSpec(name, "specedge", "heterogeneous", 1, 0, False, "global_batch", "fine_grained", global_batch=True, batch_timeout=True)
     if name == "server_only":
         return MethodSpec(name, "server_only_specedge", "heterogeneous", 1, 0, True, "none", "fine_grained")
     if name == "wo_async":

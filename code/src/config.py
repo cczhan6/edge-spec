@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from src.entities import Device
+from src.tree_drafting import SUPPORTED_TREE_DRAFT_STRATEGIES
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -24,6 +25,20 @@ def load_config(path: str | Path, scenario: str | None = None) -> dict[str, Any]
         scenario_path = Path(path).parent / f"{scenario}.yaml"
         if scenario_path.exists():
             config = deep_merge(config, _read_yaml(scenario_path))
+    validate_config(config)
+    return config
+
+
+def apply_tree_draft_strategy(config: dict[str, Any], strategy: str | None) -> dict[str, Any]:
+    if strategy is None:
+        return config
+    if strategy not in SUPPORTED_TREE_DRAFT_STRATEGIES:
+        raise ValueError(f"tree draft strategy is unknown: {strategy}")
+    config.setdefault("specedge", {})
+    config["specedge"]["tree_draft_strategy"] = strategy
+    config["specedge"]["proactive_tree_draft_strategy"] = strategy
+    config.setdefault("server_only", {})
+    config["server_only"]["tree_draft_strategy"] = strategy
     validate_config(config)
     return config
 
@@ -76,10 +91,24 @@ def validate_config(config: dict[str, Any]) -> None:
         server_batch_type = str(specedge.get("server_batch_type", "static"))
         if server_batch_type not in {"static", "dynamic"}:
             raise ValueError("specedge.server_batch_type must be static or dynamic")
+        tree_strategy = str(specedge.get("tree_draft_strategy", "specexec_approx"))
+        if tree_strategy not in SUPPORTED_TREE_DRAFT_STRATEGIES:
+            raise ValueError("specedge.tree_draft_strategy is unknown")
+        proactive_tree_strategy = str(
+            specedge.get("proactive_tree_draft_strategy", tree_strategy)
+        )
+        if proactive_tree_strategy not in SUPPORTED_TREE_DRAFT_STRATEGIES:
+            raise ValueError("specedge.proactive_tree_draft_strategy is unknown")
+        if int(specedge["max_budget"]) < int(specedge["max_beam_len"]):
+            raise ValueError("specedge.max_budget must be at least max_beam_len")
         if int(specedge["proactive_max_beam_len"]) > int(specedge["max_beam_len"]):
             raise ValueError("specedge.proactive_max_beam_len must not exceed max_beam_len")
         if int(specedge["proactive_max_budget"]) > int(specedge["max_budget"]):
             raise ValueError("specedge.proactive_max_budget must not exceed max_budget")
+        if int(specedge["proactive_max_budget"]) < int(specedge["proactive_max_beam_len"]):
+            raise ValueError(
+                "specedge.proactive_max_budget must be at least proactive_max_beam_len"
+            )
     if not config["drafter_profiles"]:
         raise ValueError("drafter_profiles must define at least one drafter")
     model_runner = config.get("model_runner", config.get("oracle"))
@@ -100,6 +129,31 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError("server_only.draft_token_rate_tok_s must be positive")
         if float(server_only.get("draft_startup_ms", 0.0)) < 0:
             raise ValueError("server_only.draft_startup_ms must be non-negative")
+        server_tree_strategy = str(
+            server_only.get(
+                "tree_draft_strategy",
+                config.get("specedge", {}).get("tree_draft_strategy", "specexec_approx"),
+            )
+        )
+        if server_tree_strategy not in SUPPORTED_TREE_DRAFT_STRATEGIES:
+            raise ValueError("server_only.tree_draft_strategy is unknown")
+        for key in ("max_n_beams", "max_beam_len", "max_branch_width", "max_budget"):
+            if key in server_only and int(server_only[key]) <= 0:
+                raise ValueError(f"server_only.{key} must be positive")
+        server_max_beam_len = int(
+            server_only.get(
+                "max_beam_len",
+                config.get("specedge", {}).get("max_beam_len", 1),
+            )
+        )
+        server_max_budget = int(
+            server_only.get(
+                "max_budget",
+                config.get("specedge", {}).get("max_budget", 1),
+            )
+        )
+        if server_max_budget < server_max_beam_len:
+            raise ValueError("server_only.max_budget must be at least max_beam_len")
     for pool_name in ("heterogeneous", "medium_only"):
         pool = config["device_pools"].get(pool_name)
         if not pool or not pool.get("templates"):

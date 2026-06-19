@@ -13,12 +13,13 @@ def draft_latency_ms(device: Device, gamma: int) -> float:
     return device.draft_startup_ms + 1000.0 * gamma / device.draft_token_rate_tok_s
 
 
-def verify_latency_ms(edge: dict[str, Any], gammas: Sequence[int]) -> float:
-    if not gammas:
+def verify_latency_ms(edge: dict[str, Any], target_verify_nodes: Sequence[int]) -> float:
+    if not target_verify_nodes:
         raise ValueError("verify batch must not be empty")
+    work_units = sum(max(1, int(value)) for value in target_verify_nodes)
     return float(edge["verify_startup_ms"]) + (
         1000.0
-        * len(gammas)
+        * work_units
         / float(edge["target_only_token_rate_tok_s"])
     )
 

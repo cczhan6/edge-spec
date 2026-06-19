@@ -22,6 +22,7 @@ LANE_VALUES="${LANE_VALUES:-1 2 4 8}"
 USE_FAKE_MODEL_RUNNER="${USE_FAKE_MODEL_RUNNER:-${USE_FAKE_ORACLE:-0}}"
 SAMPLES_PER_CATEGORY="${SAMPLES_PER_CATEGORY:-}"
 SUMMARY_ONLY="${SUMMARY_ONLY:-0}"
+TREE_DRAFT_STRATEGY="${TREE_DRAFT_STRATEGY:-}"
 
 usage() {
   cat <<'EOF'
@@ -58,6 +59,7 @@ Environment overrides:
   USE_FAKE_MODEL_RUNNER=1
   SAMPLES_PER_CATEGORY=10
   SUMMARY_ONLY=1
+  TREE_DRAFT_STRATEGY=linear|specexec_approx
   PYTHON_BIN=python3
 
 Examples:
@@ -67,6 +69,7 @@ Examples:
   SCENARIOS=combined_strong_heterogeneous SAMPLES_PER_CATEGORY=10 bash scripts/run.sh all
   SCENARIOS=combined_strong_heterogeneous SUMMARY_ONLY=1 bash scripts/run.sh all
   USE_FAKE_MODEL_RUNNER=1 LANE_VALUES="1 2" bash scripts/run.sh sensitivity-lanes
+  TREE_DRAFT_STRATEGY=specexec_approx METHOD=SpecEdge bash scripts/run.sh single
 EOF
 }
 
@@ -197,6 +200,13 @@ write_manifest() {
     else
       printf 'false\n'
     fi
+    printf 'tree_draft_strategy: '
+    if [[ -n "${TREE_DRAFT_STRATEGY}" ]]; then
+      yaml_quote "${TREE_DRAFT_STRATEGY}"
+      printf '\n'
+    else
+      printf 'null\n'
+    fi
     printf 'git_commit: '
     yaml_quote "${git_commit}"
     printf '\ngit_dirty: %s\n' "${git_dirty}"
@@ -220,10 +230,16 @@ MANIFEST_VALUE_KEY="values"
 if [[ -n "${SAMPLES_PER_CATEGORY}" ]]; then
   OPTIONAL_ARGS+=(--samples-per-category "${SAMPLES_PER_CATEGORY}")
 fi
+if [[ -n "${TREE_DRAFT_STRATEGY}" ]]; then
+  OPTIONAL_ARGS+=(--tree-draft-strategy "${TREE_DRAFT_STRATEGY}")
+fi
 
 case "${COMMAND}" in
   smoke)
     OPTIONAL_ARGS=()
+    if [[ -n "${TREE_DRAFT_STRATEGY}" ]]; then
+      OPTIONAL_ARGS+=(--tree-draft-strategy "${TREE_DRAFT_STRATEGY}")
+    fi
     if enabled "${SUMMARY_ONLY}"; then
       OPTIONAL_ARGS+=(--summary-only)
     fi

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.model_runner import DraftCandidateTree
 
 
 ACTIVE_SEGMENT_STATUSES = {"drafting", "in_transit", "queued", "verifying", "verified"}
@@ -78,6 +82,7 @@ class Request:
     target_only_downlink_ms: float = 0.0
     target_only_downlink_payload_bytes: int = 0
     proactive_draft_ids: list[int] = field(default_factory=list)
+    proactive_draft_tree: DraftCandidateTree | None = None
     proactive_base_pos: int | None = None
     proactive_prefix_version: int | None = None
 
@@ -138,12 +143,20 @@ class Segment:
     waste_recorded: bool = False
     result_arrived: bool = False
     bonus_reused: bool = False
+    tree_strategy: str = "linear"
     tree_budget_nodes: int = 0
+    draft_compute_nodes: int = 0
+    processed_candidate_count: int = 0
+    retained_tree_nodes: int = 0
+    target_verify_tree_nodes: int = 1
     beam_len: int = 0
+    draft_tree: DraftCandidateTree | None = None
+    tree_path_switched: bool = False
     proactive_used: bool = False
     proactive_hit: bool = False
     proactive_wasted_tokens: int = 0
     proactive_draft_ids: list[int] = field(default_factory=list)
+    proactive_draft_tree: DraftCandidateTree | None = None
     proactive_start_time_ms: float | None = None
     proactive_done_time_ms: float | None = None
     pipeline_target_ms: float = 0.0
@@ -155,6 +168,12 @@ class Segment:
         return len(self.draft_ids)
 
     @property
+    def proposed_count(self) -> int:
+        if self.draft_tree is None or not self.draft_tree.nodes:
+            return self.gamma
+        return max(self.gamma, max(node.depth for node in self.draft_tree.nodes))
+
+    @property
     def verify_gamma(self) -> int:
         return len(self.draft_ids)
 
@@ -164,9 +183,9 @@ class Segment:
 
     @property
     def acceptance_rate(self) -> float:
-        if not self.draft_ids:
+        if not self.proposed_count:
             return 0.0
-        return float(self.accepted_count or 0) / len(self.draft_ids)
+        return float(self.accepted_count or 0) / self.proposed_count
 
 
 @dataclass

@@ -5,8 +5,54 @@ import unittest
 from src.entities import Segment
 from src.latency import expected_emitted_tokens, verify_latency_ms
 from src.methods import get_method_spec
+from src.model_runner import DraftCandidateTree, DraftTreeNode, FakeModelRunner
 from src.simulator import Simulator
 from tests.common import accepting_model_runner, small_config
+
+
+class _RecordingTreeModelRunner(FakeModelRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.draft_calls = 0
+        self.verify_batch_calls = 0
+        self.draft_tree_calls = 0
+        self.verify_tree_batch_calls = 0
+
+    def draft(self, drafter_profile, prefix_ids, gamma):
+        self.draft_calls += 1
+        return super().draft(drafter_profile, prefix_ids, gamma)
+
+    def draft_tree(self, drafter_profile, prefix_ids, plan):
+        self.draft_tree_calls += 1
+        return super().draft_tree(drafter_profile, prefix_ids, plan)
+
+    def verify_batch(self, requests):
+        self.verify_batch_calls += 1
+        return super().verify_batch(requests)
+
+    def verify_tree_batch(self, requests):
+        self.verify_tree_batch_calls += 1
+        return super().verify_tree_batch(requests)
+
+
+class _NonPrimaryTreePathRunner(FakeModelRunner):
+    def __init__(self) -> None:
+        super().__init__(target_token_fn=lambda prefix: 1)
+
+    def draft_tree(self, drafter_profile, prefix_ids, plan):
+        return DraftCandidateTree(
+            list(prefix_ids),
+            primary_ids=[2],
+            primary_node_ids=[1],
+            nodes=[
+                DraftTreeNode(1, None, 2, 1),
+                DraftTreeNode(2, None, 1, 1),
+                DraftTreeNode(3, 2, 1, 2),
+            ],
+            processed_candidate_count=3,
+            retained_tree_nodes=3,
+            target_verify_tree_nodes=3,
+        )
 
 
 class SpecEdgeMethodTest(unittest.TestCase):
@@ -16,16 +62,64 @@ class SpecEdgeMethodTest(unittest.TestCase):
         self.assertEqual(spec.runtime, "specedge")
         self.assertTrue(spec.global_batch)
 
-    def test_specedge_linear_budget_does_not_expand_as_token_tree(self) -> None:
+    def test_target_only_does_not_require_specedge_section(self) -> None:
+        config, model_runner, workload = small_config(num_requests=1, output_len=4)
+        del config["specedge"]
+
+        result = Simulator(config, model_runner, workload, "balanced_drafter", "target_only").run()
+
+        self.assertEqual(len(result.requests[0].generated_ids), 4)
+
+    def test_specedge_uses_specexec_tree_budget_by_default(self) -> None:
         config, model_runner, workload = small_config(num_requests=2, output_len=8)
         config["sync_batch"]["B_global"] = 2
         config["specedge"]["server_batch_size"] = 2
         result = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge").run()
         verified = [segment for segment in result.segments if segment.accepted_count is not None]
         self.assertTrue(verified)
-        self.assertTrue(all(segment.tree_budget_nodes == segment.gamma for segment in verified))
+        self.assertTrue(all(segment.tree_strategy == "specexec_approx" for segment in verified))
+        self.assertTrue(any(segment.tree_budget_nodes > segment.gamma for segment in verified))
+        self.assertTrue(all(segment.processed_candidate_count == segment.draft_compute_nodes for segment in verified))
+        self.assertTrue(all(segment.retained_tree_nodes == segment.tree_budget_nodes for segment in verified))
+        self.assertTrue(all(segment.target_verify_tree_nodes == segment.retained_tree_nodes for segment in verified))
 
-    def test_specedge_verify_compute_uses_budget_field(self) -> None:
+    def test_specedge_uses_model_runner_tree_interfaces(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=5)
+        config["specedge"]["server_batch_size"] = 1
+        model_runner = _RecordingTreeModelRunner()
+
+        result = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge").run()
+
+        self.assertGreater(model_runner.draft_tree_calls, 0)
+        self.assertGreater(model_runner.verify_tree_batch_calls, 0)
+        self.assertTrue(any(segment.draft_tree is not None for segment in result.segments))
+
+    def test_specedge_linear_tree_strategy_is_opt_in(self) -> None:
+        config, _, workload = small_config(num_requests=2, output_len=8)
+        config["sync_batch"]["B_global"] = 2
+        config["specedge"]["server_batch_size"] = 2
+        config["specedge"]["tree_draft_strategy"] = "linear"
+        config["specedge"]["proactive_tree_draft_strategy"] = "linear"
+        model_runner = _RecordingTreeModelRunner()
+
+        result = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge").run()
+        verified = [segment for segment in result.segments if segment.accepted_count is not None]
+
+        self.assertTrue(verified)
+        self.assertTrue(all(segment.tree_strategy == "linear" for segment in verified))
+        self.assertTrue(all(segment.draft_tree is None for segment in verified))
+        self.assertTrue(all(segment.tree_budget_nodes == segment.gamma for segment in verified))
+        self.assertTrue(all(segment.draft_compute_nodes == segment.gamma for segment in verified))
+        self.assertGreater(model_runner.draft_calls, 0)
+        self.assertGreater(model_runner.verify_batch_calls, 0)
+        self.assertEqual(model_runner.draft_tree_calls, 0)
+        self.assertEqual(model_runner.verify_tree_batch_calls, 0)
+        verify_events = [
+            event for event in result.event_trace if event["event"] == "global_batch_verify"
+        ]
+        self.assertTrue(all(event["target_verify_tree_nodes"] == 1 for event in verify_events))
+
+    def test_specedge_verify_compute_is_segment_forward_level(self) -> None:
         config, model_runner, workload = small_config(num_requests=1, output_len=8)
         simulator = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge")
         segment = Segment(
@@ -45,7 +139,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
 
         self.assertEqual(
             simulator._verify_latency_for_segments([segment]),
-            verify_latency_ms(config["edge"], [2]),
+            verify_latency_ms(config["edge"], [segment.target_verify_tree_nodes]),
         )
         self.assertEqual(simulator._segment_payload_tokens(segment), 2)
 
@@ -54,6 +148,8 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["speculation"]["gamma_candidates"] = [1]
         config["specedge"]["server_batch_type"] = "dynamic"
         config["specedge"]["server_batch_size"] = 2
+        config["specedge"]["tree_draft_strategy"] = "linear"
+        config["specedge"]["proactive_tree_draft_strategy"] = "linear"
 
         result = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge").run()
         first_batch = next(
@@ -63,27 +159,18 @@ class SpecEdgeMethodTest(unittest.TestCase):
         self.assertEqual(first_batch["batch_size"], 2)
         self.assertEqual(first_batch["batch_type"], "dynamic")
 
-    def test_specedge_pipeline_gamma_calibrates_draft_depth(self) -> None:
+    def test_specedge_uses_configured_tree_depth_not_gamma_candidates(self) -> None:
         config, model_runner, workload = small_config(num_requests=1, output_len=8)
-        config["speculation"]["gamma_candidates"] = [1, 2, 4]
-        config["device_pools"]["heterogeneous"]["templates"]["low_end"]["draft_token_rate_tok_s"] = 100
-        config["device_pools"]["heterogeneous"]["templates"]["low_end"]["uplink_mbps"] = 1000
-        config["device_pools"]["heterogeneous"]["templates"]["low_end"]["downlink_mbps"] = 1000
-        config["device_pools"]["heterogeneous"]["templates"]["low_end"]["rtt_ms"] = 20
-        config["device_pools"]["heterogeneous"]["templates"]["low_end"]["jitter_ms"] = 0
+        config["speculation"]["gamma_candidates"] = [1]
+        config["specedge"]["max_beam_len"] = 4
         simulator = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge")
         simulator._schedule_request_arrivals()
         device = simulator.devices[0]
-        alpha = simulator.acceptance.estimate(0, device.acceptance_prior)
-        simulator._last_specedge_verify_ms = simulator._specedge_edge_cycle_ms(
-            device,
-            2,
-            expected_emitted_tokens(alpha, 2),
-        )
 
         gamma = simulator._select_gamma(simulator.requests[0], device, 0.0, 8)
 
-        self.assertEqual(gamma, 2)
+        self.assertEqual(gamma, 4)
+        self.assertFalse(simulator.spec.adaptive_gamma)
 
     def test_specedge_proactive_hit_reuses_linear_continuation(self) -> None:
         config, _, workload = small_config(num_requests=1, output_len=12)
@@ -92,7 +179,14 @@ class SpecEdgeMethodTest(unittest.TestCase):
         result = Simulator(config, accepting_model_runner(), workload, "balanced_drafter", "SpecEdge").run()
         self.assertTrue(any(segment.proactive_used for segment in result.segments))
         self.assertTrue(any(segment.proactive_hit for segment in result.segments))
-        self.assertTrue(any(segment.proactive_used for segment in result.segments if segment.draft_compute_ms == 0.0))
+        self.assertTrue(
+            any(
+                event["event"] == "draft_compute"
+                and event["proactive_used"]
+                and event["proactive_reused_tokens"] > 0
+                for event in result.event_trace
+            )
+        )
         self.assertTrue(any(event["event"] == "pipeline_schedule" for event in result.event_trace))
 
     def test_specedge_proactive_draft_occupies_edge_device(self) -> None:
@@ -154,6 +248,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["speculation"]["gamma_candidates"] = [1]
         config["server_only"]["draft_startup_ms"] = 3
         config["server_only"]["draft_token_rate_tok_s"] = 1000
+        config["server_only"]["tree_draft_strategy"] = "linear"
         result = Simulator(config, accepting_model_runner(), workload, "balanced_drafter", "server_only").run()
 
         service_events = [
@@ -167,6 +262,9 @@ class SpecEdgeMethodTest(unittest.TestCase):
         self.assertTrue(all(event["draft_model"] == "server_only:medium" for event in draft_events))
         self.assertEqual([event["scheduled_gamma"] for event in draft_events], [4, 1, 4, 1])
         self.assertEqual([event["compute_ms"] for event in draft_events], [7.0, 4.0, 7.0, 4.0])
+        self.assertEqual([event["tree_budget_nodes"] for event in draft_events], [4, 1, 4, 1])
+        self.assertTrue(all(event["tree_strategy"] == "linear" for event in draft_events))
+        self.assertTrue(all(segment.draft_tree is None for segment in result.segments))
 
         service_events.sort(key=lambda event: event["start_time_ms"])
         for previous, current in zip(service_events, service_events[1:]):
@@ -196,7 +294,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
             first_finish["finish_time_ms"],
         )
 
-    def test_server_only_uses_fixed_linear_depth(self) -> None:
+    def test_server_only_uses_fixed_tree_depth(self) -> None:
         config, _, workload = small_config(num_requests=1, output_len=10)
         config["speculation"]["gamma_candidates"] = [1]
         config["specedge"]["max_beam_len"] = 4
@@ -207,6 +305,48 @@ class SpecEdgeMethodTest(unittest.TestCase):
         ]
 
         self.assertEqual([event["scheduled_gamma"] for event in draft_events], [4, 4])
+        self.assertEqual([event["tree_budget_nodes"] for event in draft_events], [64, 64])
+        self.assertTrue(all(event["tree_strategy"] == "specexec_approx" for event in draft_events))
+
+    def test_server_only_tree_acceptance_uses_tree_depth_not_primary_gamma(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=2)
+
+        result = Simulator(
+            config,
+            _NonPrimaryTreePathRunner(),
+            workload,
+            "balanced_drafter",
+            "server_only",
+        ).run()
+        verified = [segment for segment in result.segments if segment.accepted_count is not None]
+
+        self.assertEqual(len(verified), 1)
+        self.assertEqual(verified[0].gamma, 1)
+        self.assertEqual(verified[0].accepted_count, 2)
+        self.assertEqual(verified[0].proposed_count, 2)
+        self.assertEqual(verified[0].acceptance_rate, 1.0)
+
+    def test_server_only_specexec_approx_uses_server_budget(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=6)
+        config["server_only"]["tree_draft_strategy"] = "specexec_approx"
+        config["server_only"]["max_budget"] = 64
+        config["server_only"]["draft_startup_ms"] = 3
+        config["server_only"]["draft_token_rate_tok_s"] = 1000
+
+        result = Simulator(config, accepting_model_runner(), workload, "balanced_drafter", "server_only").run()
+        draft_events = [
+            event for event in result.event_trace if event["event"] == "server_only_draft"
+        ]
+
+        self.assertEqual([event["scheduled_gamma"] for event in draft_events], [4, 1])
+        self.assertEqual(draft_events[0]["tree_budget_nodes"], 64)
+        self.assertGreater(draft_events[1]["tree_budget_nodes"], 1)
+        self.assertLessEqual(draft_events[1]["tree_budget_nodes"], 64)
+        self.assertEqual([event["compute_ms"] for event in draft_events], [83.0, 4.0])
+        self.assertEqual(draft_events[0]["processed_candidate_count"], 80)
+        self.assertEqual(draft_events[0]["retained_tree_nodes"], 64)
+        self.assertEqual(draft_events[0]["target_verify_tree_nodes"], 64)
+        self.assertTrue(all(event["tree_strategy"] == "specexec_approx" for event in draft_events))
 
 
 if __name__ == "__main__":
