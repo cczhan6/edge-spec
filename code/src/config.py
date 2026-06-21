@@ -8,6 +8,8 @@ from typing import Any
 from src.entities import Device
 from src.tree_drafting import SUPPORTED_TREE_DRAFT_STRATEGIES
 
+REMOVED_SCENARIOS = {"balanced_drafter", "network_heterogeneous"}
+
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = copy.deepcopy(base)
@@ -25,6 +27,8 @@ def load_config(path: str | Path, scenario: str | None = None) -> dict[str, Any]
         scenario_path = Path(path).parent / f"{scenario}.yaml"
         if scenario_path.exists():
             config = deep_merge(config, _read_yaml(scenario_path))
+        elif scenario in REMOVED_SCENARIOS:
+            raise FileNotFoundError(f"scenario config was removed: {scenario}")
     validate_config(config)
     return config
 

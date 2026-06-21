@@ -45,8 +45,6 @@
 | 场景 | 目的 |
 |---|---|
 | `homogeneous` | 所有虚拟 client 使用 `medium` drafter，用于观察无设备强异构时的表现。 |
-| `balanced_drafter` | 网络相同，主要观察 drafter 质量和速度异构。 |
-| `network_heterogeneous` | 强化 RTT 和带宽差异，主要观察通信瓶颈。 |
 | `combined_strong_heterogeneous` | 设备、网络和到达过程均强异构，主要观察动态负载稳定性。 |
 
 场景覆盖文件位于 `configs/<scenario>.yaml`，会与 `configs/default.yaml` 深度合并。参数依据和解释见 [docs/experiment.md](docs/experiment.md)。
@@ -74,7 +72,7 @@ pip install -r requirements.txt
 # 不加载真实模型的快速检查
 bash scripts/run.sh smoke
 
-# 默认 balanced_drafter + full
+# 默认 combined_strong_heterogeneous + full
 bash scripts/run.sh single
 
 # 默认场景 + 主方法/基线
@@ -92,7 +90,7 @@ bash scripts/run.sh sensitivity-lanes
 | `DATASET` | `data/spec_bench/question.jsonl` |
 | `RUN_ROOT` | `outputs/runs` |
 | `RUN_ID` | 当前开始时间，格式 `YYYYMMDD-HHMMSS` |
-| `SCENARIOS` | `homogeneous balanced_drafter network_heterogeneous combined_strong_heterogeneous` |
+| `SCENARIOS` | `homogeneous combined_strong_heterogeneous` |
 | `METHODS` | `full target_only sync_batch_sd SpecEdge server_only` |
 | `USE_FAKE_MODEL_RUNNER` | `0` |
 | `SAMPLES_PER_CATEGORY` | 空，默认使用 `simulation.num_requests` 全局抽样 |

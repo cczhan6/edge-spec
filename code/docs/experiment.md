@@ -195,8 +195,6 @@ delay_ms = RTT_ms / 2 + payload_bytes * 8 / (bandwidth_mbps * 1000) + determinis
 | 场景 | 目的 |
 |---|---|
 | `homogeneous` | 8 台同构虚拟 client，全部使用 `medium` drafter，并沿用 `combined_strong_heterogeneous` 中 `mid_end` 的 draft 速率、网络参数和 Poisson 到达；用于观察强负载口径下没有草稿设备异构时 `full` 与 SpecEdge-style baseline 的差异 |
-| `balanced_drafter` | 8 台设备，网络相同，主要观察 drafter 质量/速度异构 |
-| `network_heterogeneous` | 8 台设备，强化网络 RTT/带宽差异，观察通信瓶颈 |
 | `combined_strong_heterogeneous` | 8 台设备，Poisson 到达，设备与网络都强异构，观察动态负载稳定性 |
 
 场景覆盖文件位于 `configs/<scenario>.yaml`，通过 `load_config(default, scenario)` 与
@@ -219,8 +217,8 @@ delay_ms = RTT_ms / 2 + payload_bytes * 8 / (bandwidth_mbps * 1000) + determinis
 6. 若 draft 全接受，则 target 产生一个 bonus token；
 7. 设备收到结果后提交 emitted token，必要时重起草后续 segment。
 
-在 `full` 及其异步消融方法中，同一请求可以维护多段乐观前缀。`full` 不使用固定
-`W_default` 截断在飞 segment 数，而是按 DSI 原仓库逻辑持续向后起草，直到覆盖剩余
+在 `full` 及其异步消融方法中，同一请求可以维护多段乐观前缀。`full` 不以固定的
+`W_default` 限制已起草但尚未按序确认的 segment 数量，而是持续向后起草，直到覆盖剩余
 输出、请求完成或前缀被 rejection/bonus 重定位打断。后续位置的 segment 到达边缘后，
 不必等待当前 `edge_frontier_pos` 验证完成；它可以提前进入空闲 verifier lane。
 边缘会缓存这些 out-of-order verification result，并只在所有祖先 segment 都确认后，

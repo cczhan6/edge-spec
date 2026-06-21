@@ -66,7 +66,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config, model_runner, workload = small_config(num_requests=1, output_len=4)
         del config["specedge"]
 
-        result = Simulator(config, model_runner, workload, "balanced_drafter", "target_only").run()
+        result = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "target_only").run()
 
         self.assertEqual(len(result.requests[0].generated_ids), 4)
 
@@ -74,7 +74,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config, model_runner, workload = small_config(num_requests=2, output_len=8)
         config["sync_batch"]["B_global"] = 2
         config["specedge"]["server_batch_size"] = 2
-        result = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge").run()
+        result = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "SpecEdge").run()
         verified = [segment for segment in result.segments if segment.accepted_count is not None]
         self.assertTrue(verified)
         self.assertTrue(all(segment.tree_strategy == "specexec_approx" for segment in verified))
@@ -88,7 +88,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["specedge"]["server_batch_size"] = 1
         model_runner = _RecordingTreeModelRunner()
 
-        result = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge").run()
+        result = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "SpecEdge").run()
 
         self.assertGreater(model_runner.draft_tree_calls, 0)
         self.assertGreater(model_runner.verify_tree_batch_calls, 0)
@@ -102,7 +102,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["specedge"]["proactive_tree_draft_strategy"] = "linear"
         model_runner = _RecordingTreeModelRunner()
 
-        result = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge").run()
+        result = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "SpecEdge").run()
         verified = [segment for segment in result.segments if segment.accepted_count is not None]
 
         self.assertTrue(verified)
@@ -121,7 +121,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
 
     def test_specedge_verify_compute_is_segment_forward_level(self) -> None:
         config, model_runner, workload = small_config(num_requests=1, output_len=8)
-        simulator = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge")
+        simulator = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "SpecEdge")
         segment = Segment(
             segment_id=0,
             request_id=0,
@@ -151,7 +151,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["specedge"]["tree_draft_strategy"] = "linear"
         config["specedge"]["proactive_tree_draft_strategy"] = "linear"
 
-        result = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge").run()
+        result = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "SpecEdge").run()
         first_batch = next(
             event for event in result.event_trace if event["event"] == "global_batch_verify"
         )
@@ -163,7 +163,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config, model_runner, workload = small_config(num_requests=1, output_len=8)
         config["speculation"]["gamma_candidates"] = [1]
         config["specedge"]["max_beam_len"] = 4
-        simulator = Simulator(config, model_runner, workload, "balanced_drafter", "SpecEdge")
+        simulator = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "SpecEdge")
         simulator._schedule_request_arrivals()
         device = simulator.devices[0]
 
@@ -176,7 +176,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config, _, workload = small_config(num_requests=1, output_len=12)
         config["speculation"]["gamma_candidates"] = [1]
         config["specedge"]["server_batch_size"] = 1
-        result = Simulator(config, accepting_model_runner(), workload, "balanced_drafter", "SpecEdge").run()
+        result = Simulator(config, accepting_model_runner(), workload, "combined_strong_heterogeneous", "SpecEdge").run()
         self.assertTrue(any(segment.proactive_used for segment in result.segments))
         self.assertTrue(any(segment.proactive_hit for segment in result.segments))
         self.assertTrue(
@@ -196,7 +196,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["device_pools"]["medium_only"]["templates"]["medium"]["count"] = 1
         config["speculation"]["gamma_candidates"] = [1]
         config["specedge"]["server_batch_size"] = 1
-        result = Simulator(config, accepting_model_runner(), workload, "balanced_drafter", "SpecEdge").run()
+        result = Simulator(config, accepting_model_runner(), workload, "combined_strong_heterogeneous", "SpecEdge").run()
         first_proactive = next(
             event
             for event in result.event_trace
@@ -218,8 +218,8 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["specedge"]["server_batch_size"] = 1
         spec = get_method_spec("server_only", config)
         self.assertFalse(spec.global_batch)
-        target = Simulator(config, model_runner, workload, "balanced_drafter", "target_only").run()
-        server_only = Simulator(config, model_runner, workload, "balanced_drafter", "server_only").run()
+        target = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "target_only").run()
+        server_only = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "server_only").run()
         self.assertEqual(
             [request.generated_ids for request in server_only.requests],
             [request.generated_ids for request in target.requests],
@@ -249,7 +249,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["server_only"]["draft_startup_ms"] = 3
         config["server_only"]["draft_token_rate_tok_s"] = 1000
         config["server_only"]["tree_draft_strategy"] = "linear"
-        result = Simulator(config, accepting_model_runner(), workload, "balanced_drafter", "server_only").run()
+        result = Simulator(config, accepting_model_runner(), workload, "combined_strong_heterogeneous", "server_only").run()
 
         service_events = [
             event
@@ -299,7 +299,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["speculation"]["gamma_candidates"] = [1]
         config["specedge"]["max_beam_len"] = 4
 
-        result = Simulator(config, accepting_model_runner(), workload, "balanced_drafter", "server_only").run()
+        result = Simulator(config, accepting_model_runner(), workload, "combined_strong_heterogeneous", "server_only").run()
         draft_events = [
             event for event in result.event_trace if event["event"] == "server_only_draft"
         ]
@@ -315,7 +315,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
             config,
             _NonPrimaryTreePathRunner(),
             workload,
-            "balanced_drafter",
+            "combined_strong_heterogeneous",
             "server_only",
         ).run()
         verified = [segment for segment in result.segments if segment.accepted_count is not None]
@@ -333,7 +333,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         config["server_only"]["draft_startup_ms"] = 3
         config["server_only"]["draft_token_rate_tok_s"] = 1000
 
-        result = Simulator(config, accepting_model_runner(), workload, "balanced_drafter", "server_only").run()
+        result = Simulator(config, accepting_model_runner(), workload, "combined_strong_heterogeneous", "server_only").run()
         draft_events = [
             event for event in result.event_trace if event["event"] == "server_only_draft"
         ]

@@ -10,7 +10,7 @@ class LaneNoMicrobatchTest(unittest.TestCase):
     def test_lane_trace_always_has_batch_size_one(self) -> None:
         config, model_runner, workload = small_config(num_requests=6, output_len=8)
         config["edge"]["num_lanes"] = 1
-        result = Simulator(config, model_runner, workload, "balanced_drafter", "full").run()
+        result = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "full").run()
         lane_events = [event for event in result.event_trace if event["event"] == "lane_verify"]
         self.assertGreater(len(lane_events), 1)
         self.assertTrue(all(event["batch_size"] == 1 for event in lane_events))

@@ -102,7 +102,9 @@ class CliSmokeTest(unittest.TestCase):
             self.assertRegex(run_dir.name, r"^\d{8}-\d{6}(-\d{2})?$")
             self.assertIn(f"Run directory: {run_dir}", completed.stderr)
             self.assertTrue((run_dir / "manifest.yaml").exists())
-            self.assertTrue((run_dir / "raw" / "main_results_balanced_drafter.csv").exists())
+            self.assertTrue(
+                (run_dir / "raw" / "main_results_combined_strong_heterogeneous.csv").exists()
+            )
             self.assertTrue((run_dir / "summary" / "all_results.csv").exists())
             self.assertTrue((run_dir / "summary" / "category_results.csv").exists())
 
@@ -111,7 +113,7 @@ class CliSmokeTest(unittest.TestCase):
             self.assertIn('use_fake_model_runner: true', manifest)
             self.assertIn('summary_only: true', manifest)
             self.assertIn('tree_draft_strategy: "linear"', manifest)
-            self.assertIn('  - "balanced_drafter"', manifest)
+            self.assertIn('  - "combined_strong_heterogeneous"', manifest)
             self.assertIn('  - "full"', manifest)
 
     def test_tree_draft_strategy_cli_override_disables_tree_baseline(self) -> None:

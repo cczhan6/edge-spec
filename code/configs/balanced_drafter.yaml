@@ -1,3 +1,0 @@
-simulation:
-  num_devices: 8
-  request_arrival: burst

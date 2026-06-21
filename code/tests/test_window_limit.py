@@ -17,7 +17,7 @@ class WindowLimitTest(unittest.TestCase):
             config,
             accepting_model_runner(),
             workload,
-            "balanced_drafter",
+            "combined_strong_heterogeneous",
             "full",
         ).run()
 
@@ -26,7 +26,7 @@ class WindowLimitTest(unittest.TestCase):
 
     def test_wo_async_keeps_single_segment_window(self) -> None:
         config, model_runner, workload = small_config(num_requests=2, output_len=24)
-        result = Simulator(config, model_runner, workload, "balanced_drafter", "wo_async").run()
+        result = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "wo_async").run()
         self.assertTrue(all(request.max_outstanding_observed <= 1 for request in result.requests))
         self.assertTrue(all(runtime.total_busy_time_ms > 0.0 for runtime in result.devices))
 

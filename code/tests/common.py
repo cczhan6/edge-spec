@@ -9,7 +9,7 @@ def small_config(
     num_requests: int = 3,
     output_len: int = 12,
 ) -> tuple[dict, FakeModelRunner, list[WorkloadItem]]:
-    config = load_config("configs/default.yaml", "balanced_drafter")
+    config = load_config("configs/default.yaml")
     num_devices = max(1, min(3, num_requests))
     config["simulation"]["num_requests"] = num_requests
     config["simulation"]["num_devices"] = num_devices
@@ -22,6 +22,9 @@ def small_config(
     config["device_pools"]["medium_only"]["templates"]["medium"]["count"] = num_devices
     for pool in config["device_pools"].values():
         for template in pool["templates"].values():
+            template["draft_token_rate_tok_s"] = 500
+            template["uplink_mbps"] = 100
+            template["downlink_mbps"] = 300
             template["rtt_ms"] = 100
             template["jitter_ms"] = 0
     model_runner = FakeModelRunner()

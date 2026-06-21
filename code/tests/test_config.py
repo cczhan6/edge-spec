@@ -7,6 +7,45 @@ from src.tree_drafting import build_tree_draft_strategy
 
 
 class ConfigTest(unittest.TestCase):
+    def test_default_device_and_verify_rates_match_strong_heterogeneous_profile(self) -> None:
+        config = load_config("configs/default.yaml")
+        templates = config["device_pools"]["heterogeneous"]["templates"]
+
+        self.assertEqual(templates["low_end"]["draft_token_rate_tok_s"], 25)
+        self.assertEqual(templates["mid_end"]["draft_token_rate_tok_s"], 60)
+        self.assertEqual(templates["high_end"]["draft_token_rate_tok_s"], 100)
+        self.assertEqual(
+            config["device_pools"]["medium_only"]["templates"]["medium"][
+                "draft_token_rate_tok_s"
+            ],
+            60,
+        )
+        self.assertEqual(config["edge"]["target_only_token_rate_tok_s"], 80)
+
+    def test_homogeneous_uses_only_medium_devices(self) -> None:
+        config = load_config("configs/default.yaml", "homogeneous")
+        templates = config["device_pools"]["heterogeneous"]["templates"]
+
+        self.assertEqual(templates["low_end"]["count"], 0)
+        self.assertEqual(templates["mid_end"]["count"], 8)
+        self.assertEqual(templates["high_end"]["count"], 0)
+        self.assertEqual(
+            {template["drafter_profile"] for template in templates.values()},
+            {"medium"},
+        )
+        self.assertEqual(
+            {template["draft_token_rate_tok_s"] for template in templates.values()},
+            {60},
+        )
+
+    def test_removed_scenario_config_is_rejected(self) -> None:
+        with self.assertRaisesRegex(FileNotFoundError, "scenario config was removed"):
+            load_config("configs/default.yaml", "balanced_drafter")
+
+    def test_custom_scenario_label_can_use_default_config_without_override_file(self) -> None:
+        config = load_config("configs/default.yaml", "smoke")
+        self.assertEqual(config["simulation"]["num_devices"], 8)
+
     def test_requires_positive_analytical_target_rate(self) -> None:
         config = load_config("configs/default.yaml")
         config["edge"]["target_only_token_rate_tok_s"] = 0

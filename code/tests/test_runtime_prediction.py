@@ -26,7 +26,7 @@ class RuntimePredictionTest(unittest.TestCase):
     def test_gamma_enumeration_does_not_probe_model_runner(self) -> None:
         config, _, workload = small_config(num_requests=3, output_len=8)
         model_runner = _RecordingModelRunner()
-        result = Simulator(config, model_runner, workload, "balanced_drafter", "full").run()
+        result = Simulator(config, model_runner, workload, "combined_strong_heterogeneous", "full").run()
         candidates = set(config["speculation"]["gamma_candidates"])
         self.assertTrue(
             all(segment.scheduled_gamma in candidates for segment in result.segments)

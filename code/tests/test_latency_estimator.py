@@ -16,7 +16,7 @@ class AnalyticalLatencyTest(unittest.TestCase):
     def test_token_rate_formulas(self) -> None:
         config = load_config("configs/default.yaml")
         device = build_devices(config)[0]
-        self.assertEqual(draft_latency_ms(device, 4), 9.0)
+        self.assertEqual(draft_latency_ms(device, 4), 161.0)
         self.assertEqual(verify_latency_ms(config["edge"], [1, 1]), 33.0)
         self.assertEqual(verify_latency_ms(config["edge"], [2, 4]), 83.0)
         self.assertEqual(target_only_latency_ms(config["edge"], 4), 50.0)

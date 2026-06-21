@@ -31,8 +31,6 @@ from scripts.progress import ProgressReporter
 
 DEFAULT_SCENARIOS = (
     "homogeneous",
-    "balanced_drafter",
-    "network_heterogeneous",
     "combined_strong_heterogeneous",
 )
 

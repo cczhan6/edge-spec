@@ -13,8 +13,8 @@ RUN_ID="${RUN_ID:-}"
 RUN_DIR="${RUN_DIR:-}"
 OUT_DIR="${OUT_DIR:-}"
 SUMMARY_OUT="${SUMMARY_OUT:-}"
-SCENARIO="${SCENARIO:-balanced_drafter}"
-SCENARIOS="${SCENARIOS:-homogeneous balanced_drafter network_heterogeneous combined_strong_heterogeneous}"
+SCENARIO="${SCENARIO:-combined_strong_heterogeneous}"
+SCENARIOS="${SCENARIOS:-homogeneous combined_strong_heterogeneous}"
 METHOD="${METHOD:-full}"
 METHODS="${METHODS:-full target_only sync_batch_sd SpecEdge server_only}"
 W_VALUES="${W_VALUES:-1 2 3 4}"
@@ -35,7 +35,7 @@ Usage:
   bash scripts/run.sh help
 
 Commands:
-  smoke              Run balanced_drafter + full with the fake model runner.
+  smoke              Run combined_strong_heterogeneous + full with the fake model runner.
   single             Run one real-model scenario and method.
   all                Run all default scenarios with main baselines and Full.
   sensitivity-w      Legacy fixed-window sweep; current Full ignores W_default.
@@ -50,8 +50,8 @@ Environment overrides:
   RUN_DIR=outputs/runs/<RUN_ID>
   OUT_DIR=<RUN_DIR>/raw
   SUMMARY_OUT=<RUN_DIR>/summary/all_results.csv
-  SCENARIO=balanced_drafter
-  SCENARIOS="homogeneous balanced_drafter network_heterogeneous combined_strong_heterogeneous"
+  SCENARIO=combined_strong_heterogeneous
+  SCENARIOS="homogeneous combined_strong_heterogeneous"
   METHOD=full
   METHODS="full target_only sync_batch_sd SpecEdge server_only"
   W_VALUES="1 2 3 4"
@@ -243,14 +243,14 @@ case "${COMMAND}" in
     if enabled "${SUMMARY_ONLY}"; then
       OPTIONAL_ARGS+=(--summary-only)
     fi
-    MANIFEST_SCENARIOS=(balanced_drafter)
+    MANIFEST_SCENARIOS=(combined_strong_heterogeneous)
     MANIFEST_METHODS=(full)
     prepare_run_dir
     write_manifest "${COMMAND}"
     print_and_run "${PYTHON_BIN}" -m scripts.run_all \
       --config "${CONFIG}" \
       --dataset "${DATASET}" \
-      --scenario balanced_drafter \
+      --scenario combined_strong_heterogeneous \
       --method full \
       --out_dir "${OUT_DIR}" \
       --summary_out "${SUMMARY_OUT}" \

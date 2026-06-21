@@ -18,7 +18,7 @@ class IntraRequestParallelVerifyTest(unittest.TestCase):
             config,
             accepting_model_runner(),
             workload,
-            "balanced_drafter",
+            "combined_strong_heterogeneous",
             "full",
         ).run()
 
