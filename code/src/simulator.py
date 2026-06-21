@@ -467,7 +467,20 @@ class Simulator:
         request.target_only_compute_ms = compute_ms
         request.target_only_downlink_payload_bytes = payload_bytes
         request.target_only_downlink_ms = delay_ms
-        request.first_token_time_ms = finish_ms + delay_ms if generated_ids else None
+        if generated_ids:
+            first_token_compute_ms = target_only_latency_ms(self.config["edge"], 1)
+            first_token_payload_bytes = self._payload_bytes(1)
+            first_token_downlink_ms = self._network_delay_ms(
+                self.devices[request.device_id],
+                "downlink",
+                f"target-only-first-token:{request_id}",
+                first_token_payload_bytes,
+            )
+            request.first_token_time_ms = (
+                start_ms + first_token_compute_ms + first_token_downlink_ms
+            )
+        else:
+            request.first_token_time_ms = None
         self._trace.append(
             {
                 "event": "target_only_service",

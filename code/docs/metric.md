@@ -29,7 +29,7 @@
 | `p50_latency_ms` | 请求完成时延 P50。 |
 | `p95_latency_ms` | 请求完成时延 P95。 |
 | `p99_latency_ms` | 请求完成时延 P99。 |
-| `avg_ttft_ms` | 首 token 返回时延平均值。 |
+| `avg_ttft_ms` | 首 token 返回时延平均值。`target_only` 按 prompt 上传、边缘排队、prefill、第一次 decode 和首 token 下行计算。 |
 | `goodput_tok_s` | 最终提交给用户的输出 token 数除以 makespan。 |
 | `avg_acceptance_rate` | 真实 accepted draft tokens 除以总 proposed draft positions；线性段等于主路径 draft tokens，树形段等于候选树可验证路径深度。 |
 | `avg_selected_gamma` | 调度器选择的平均 gamma。 |
