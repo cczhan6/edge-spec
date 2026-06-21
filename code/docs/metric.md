@@ -62,7 +62,7 @@ SpecBench 原始类别会归并为 6 个顶层类别：`MT`、`QA`、`Math`、`R
 
 | 文件 | 主要用途 |
 |---|---|
-| `request_details_<scenario>_<method>.csv` | 排查单个请求的时延、TTFT、origin device、类别、committed token、rollback 和 target-only 分项。 |
+| `request_details_<scenario>_<method>.csv` | 排查单个请求的时延、TTFT、origin device、类别、committed token、rollback、max outstanding、max unconfirmed draft tokens 和 target-only 分项。 |
 | `segment_details_<scenario>_<method>.csv` | 排查 segment 级 scheduled/verify gamma、真实 acceptance、bonus reuse、payload、lane、draft 预算、SpecEdge pipeline 字段和最终状态。 |
 | `round_trace_<scenario>_<method>.csv` | 按调度轮次复现 segment 行为，适合定位动态 gamma、回滚和 stale segment。 |
 | `event_details_<scenario>_<method>.csv` | 查看 draft、verify、batch、target-only、server_only direct verify 和 request completion 事件。 |

@@ -75,6 +75,7 @@ class Request:
     overlap_credit_ms: float = 0.0
     first_token_time_ms: float | None = None
     max_outstanding_observed: int = 0
+    max_unconfirmed_tokens_observed: int = 0
     target_only_uplink_ms: float = 0.0
     target_only_uplink_payload_bytes: int = 0
     target_only_queue_wait_ms: float = 0.0

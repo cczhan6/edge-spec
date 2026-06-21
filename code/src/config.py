@@ -61,6 +61,10 @@ def validate_config(config: dict[str, Any]) -> None:
     speculation = config["speculation"]
     if int(speculation["W_default"]) <= 0:
         raise ValueError("W_default must be positive")
+    if int(speculation.get("W_max", 1)) <= 0:
+        raise ValueError("W_max must be positive")
+    if int(speculation.get("unconfirmed_token_budget", speculation.get("W_max", 0))) <= 0:
+        raise ValueError("unconfirmed_token_budget must be positive")
     candidates = [int(value) for value in speculation["gamma_candidates"]]
     if not candidates or any(value <= 0 for value in candidates):
         raise ValueError("gamma_candidates must contain positive integers")

@@ -162,6 +162,46 @@ class Simulator:
     def _has_fixed_speculation_window(self) -> bool:
         return self.spec.window_size > 0
 
+    def _uses_unconfirmed_token_budget(self) -> bool:
+        return self.spec.runtime == "async"
+
+    def _unconfirmed_token_budget(self) -> int:
+        speculation = self.config["speculation"]
+        return int(
+            speculation.get(
+                "unconfirmed_token_budget",
+                speculation.get("W_max", 0),
+            )
+        )
+
+    def _unconfirmed_draft_tokens(self, request: Request) -> int:
+        if not self._uses_unconfirmed_token_budget():
+            return 0
+        token_count = 0
+        seen_segment_ids: set[int] = set()
+        for segment_id in request.pending_segments.values():
+            if segment_id in seen_segment_ids:
+                continue
+            seen_segment_ids.add(segment_id)
+            segment = self.segments[segment_id]
+            if segment.status in ACTIVE_SEGMENT_STATUSES:
+                token_count += segment.gamma
+        return token_count
+
+    def _remaining_unconfirmed_token_budget(self, request: Request) -> int:
+        if not self._uses_unconfirmed_token_budget():
+            return request.output_len
+        return max(
+            0,
+            self._unconfirmed_token_budget() - self._unconfirmed_draft_tokens(request),
+        )
+
+    def _observe_unconfirmed_token_budget(self, request: Request) -> None:
+        request.max_unconfirmed_tokens_observed = max(
+            request.max_unconfirmed_tokens_observed,
+            self._unconfirmed_draft_tokens(request),
+        )
+
     def _global_batch_size(self) -> int:
         if self._is_specedge_runtime():
             batch_size = self.config["specedge"].get("server_batch_size")
@@ -660,6 +700,8 @@ class Simulator:
             return False
         if self.model_runner.eos_token_id is not None and prefix_ids[-1] == self.model_runner.eos_token_id:
             return False
+        if self._remaining_unconfirmed_token_budget(request) <= 0:
+            return False
         return request.committed_pos + speculative_count < request.output_len
 
     def _try_start_device(self, runtime: DeviceRuntime, now_ms: float) -> None:
@@ -690,6 +732,8 @@ class Simulator:
             return False
         if self.model_runner.eos_token_id is not None and prefix_ids[-1] == self.model_runner.eos_token_id:
             return False
+        if self._remaining_unconfirmed_token_budget(request) <= 0:
+            return False
         return request.committed_pos + speculative_count < request.output_len
 
     def _start_draft(
@@ -703,6 +747,9 @@ class Simulator:
         if blocked:
             return
         remaining = request.output_len - request.committed_pos - speculative_count
+        remaining = min(remaining, self._remaining_unconfirmed_token_budget(request))
+        if remaining <= 0:
+            return
         gamma = self._select_gamma(request, runtime.device, now_ms, remaining)
         if self.spec.runtime == "specedge":
             gamma = min(gamma, self._specedge_max_beam_len())
@@ -875,6 +922,7 @@ class Simulator:
             request.max_outstanding_observed,
             request.outstanding_count,
         )
+        self._observe_unconfirmed_token_budget(request)
         runtime.active_segment_id = segment.segment_id
         runtime.busy_until_ms = now_ms + duration_ms
         runtime.total_queue_wait_ms += segment.draft_queue_wait_ms

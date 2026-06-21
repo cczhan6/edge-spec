@@ -80,6 +80,7 @@ device_pools:
 speculation:
   W_default: 2
   W_max: 4
+  unconfirmed_token_budget: 16
   gamma_candidates: [1, 2, 4, 6, 8]
   gamma_fixed: 4
   acceptance_window_rounds: 8
