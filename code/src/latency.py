@@ -13,6 +13,12 @@ def draft_latency_ms(device: Device, gamma: int) -> float:
     return device.draft_startup_ms + 1000.0 * gamma / device.draft_token_rate_tok_s
 
 
+def device_prefill_latency_ms(device: Device, prompt_tokens: int) -> float:
+    if prompt_tokens < 0:
+        raise ValueError("prompt_tokens must be >= 0")
+    return device.draft_startup_ms + 1000.0 * prompt_tokens / device.draft_token_rate_tok_s
+
+
 def verify_latency_ms(edge: dict[str, Any], target_verify_nodes: Sequence[int]) -> float:
     if not target_verify_nodes:
         raise ValueError("verify batch must not be empty")
@@ -21,6 +27,14 @@ def verify_latency_ms(edge: dict[str, Any], target_verify_nodes: Sequence[int]) 
         1000.0
         * work_units
         / float(edge["target_only_token_rate_tok_s"])
+    )
+
+
+def target_prefill_latency_ms(edge: dict[str, Any], prompt_tokens: int) -> float:
+    if prompt_tokens < 0:
+        raise ValueError("prompt_tokens must be >= 0")
+    return float(edge["target_only_startup_ms"]) + (
+        1000.0 * prompt_tokens / float(edge["target_only_token_rate_tok_s"])
     )
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.communication import network_delay_ms
-from src.latency import target_only_latency_ms
+from src.latency import target_only_latency_ms, target_prefill_latency_ms
 from src.simulator import Simulator
 from tests.common import small_config
 
@@ -21,7 +21,14 @@ class TargetOnlyCapacityTest(unittest.TestCase):
         ).run()
         requests = result.requests
         self.assertEqual(len(result.lanes), 0)
-        self.assertAlmostEqual(requests[1].finish_time_ms - requests[0].finish_time_ms, 50.0)
+        expected_service_ms = target_prefill_latency_ms(
+            config["edge"],
+            requests[0].prompt_token_count,
+        ) + target_only_latency_ms(config["edge"], len(requests[0].generated_ids))
+        self.assertAlmostEqual(
+            requests[1].finish_time_ms - requests[0].finish_time_ms,
+            expected_service_ms,
+        )
         self.assertEqual(
             [event["lane_id"] for event in result.event_trace if event["event"] == "target_only_service"],
             [0, 0],
@@ -59,6 +66,7 @@ class TargetOnlyCapacityTest(unittest.TestCase):
         expected_ttft_ms = (
             request.target_only_uplink_ms
             + request.target_only_queue_wait_ms
+            + target_prefill_latency_ms(config["edge"], request.prompt_token_count)
             + target_only_latency_ms(config["edge"], 1)
             + first_token_downlink_ms
         )

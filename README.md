@@ -21,3 +21,6 @@ python3 -m unittest discover -s tests -v
 - [实验协议](code/docs/experiment.md)
 - [指标定义](code/docs/metric.md)
 - [论文材料目录](paper/README.md)
+
+当前实验口径参考 SpecEdge 首轮 `prefill` 流程：所有方法都计入初始 prompt 上传、
+端侧 drafter prefill 和服务器 target prefill。

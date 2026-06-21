@@ -82,7 +82,9 @@ SAMPLES_PER_CATEGORY=10 bash scripts/run.sh all
 
 真实 drafter 和 target 必须共享 tokenizer/vocab；不兼容时启动失败。drafter 和
 target-only 自回归 forward 使用 KV cache，verify 使用一次 target forward，虚拟时延按
-固定 verification forward 近似计费。
+固定 verification forward 近似计费。所有方法都会计入首轮 prompt 上传、drafter
+prefill 和 target prefill；非 target-only 方法的首个 segment 上传 payload 额外包含
+prompt token。
 
 ### 虚拟设备与边缘
 
@@ -135,7 +137,7 @@ target_only_token_rate_tok_s = 80
 verify 不是免费操作，但一次 target forward 可以同时覆盖多个候选 token，因此其时间
 应明显短于同等 token 数的逐 token 自回归 decode。
 
-按当前公式，在单请求单段验证时：
+按当前公式，在不含首段 target prefill 的单请求单段验证时：
 
 ```text
 gamma = 4: verify_ms = 8 + 1000 / 80 = 20.5 ms
@@ -176,10 +178,14 @@ SpecDecode-Bench 对 vLLM 生产级实现的 profiling 报告显示，target ver
 解析时延：
 
 ```text
+draft_prefill_ms    = draft_startup_ms + 1000 * prompt_tokens / draft_token_rate_tok_s
 draft_ms            = draft_startup_ms + 1000 * gamma / draft_token_rate_tok_s
-verify_ms           = verify_startup_ms + 1000 * B / target_only_token_rate_tok_s
-target_only_ms      = target_only_startup_ms + 1000 * output_tokens / target_only_token_rate_tok_s
-target_only_ttft_ms = uplink_ms + queue_wait_ms + target_only_startup_ms
+target_prefill_ms   = target_only_startup_ms + 1000 * prompt_tokens / target_only_token_rate_tok_s
+verify_ms           = target_prefill_ms(first segment) + verify_startup_ms
+                      + 1000 * B / target_only_token_rate_tok_s
+target_only_ms      = target_prefill_ms
+                      + target_only_startup_ms + 1000 * output_tokens / target_only_token_rate_tok_s
+target_only_ttft_ms = uplink_ms + queue_wait_ms + target_prefill_ms + target_only_startup_ms
                       + 1000 / target_only_token_rate_tok_s + first_token_downlink_ms
 ```
 
@@ -189,6 +195,9 @@ target_only_ttft_ms = uplink_ms + queue_wait_ms + target_only_startup_ms
 payload_bytes = packet_header_bytes + token_count * packet_token_bytes
 delay_ms = RTT_ms / 2 + payload_bytes * 8 / (bandwidth_mbps * 1000) + deterministic_jitter_ms
 ```
+
+其中非 target-only 方法的首个 segment 上行 `token_count` 包含 `prompt_tokens` 和
+segment payload token；后续 segment 只包含 draft/tree payload token。
 
 ### 场景
 
@@ -206,20 +215,23 @@ delay_ms = RTT_ms / 2 + payload_bytes * 8 / (bandwidth_mbps * 1000) + determinis
 
 ### Target-only
 
-`target_only` 将请求上传到边缘，单个 target 服务资源自回归生成输出 token。首 token
-在边缘完成 prefill 和第一次 decode 后即可下行返回；请求完成时延仍按全部输出 token
-生成完成并返回最终输出计算。语义由 target 真实 greedy decoding 决定，时延由
-`target_only_ms` 和通信公式决定。
+`target_only` 将 prompt 上传到边缘，单个 target 服务资源完成 target prefill 后自回归
+生成输出 token。首 token 在边缘完成 prefill 和第一次 decode 后即可下行返回；请求完成
+时延仍按全部输出 token 生成完成并返回最终输出计算。语义由 target 真实 greedy
+decoding 决定，时延由 `target_only_ms` 和通信公式决定。
 
 ### 推测解码公共流程
 
 1. 请求按 `request_id % num_devices` 映射到 origin device；
-2. 设备从本地 FIFO 队列取一个 segment，基于真实前缀调用 drafter 生成 `gamma` 个 token；
-3. segment 上传边缘，边缘 target 验证 draft token；
-4. 若 target argmax 匹配 draft token，则 token 被接受；
-5. 首个不匹配位置产生 correction；
-6. 若 draft 全接受，则 target 产生一个 bonus token；
-7. 设备收到结果后提交 emitted token，必要时重起草后续 segment。
+2. 首个 segment 在端侧执行 drafter prefill，首个上传包同时携带 prompt 和 draft/tree
+   payload；
+3. 边缘 target 在首个 verify 前执行 target prefill；
+4. 设备从本地 FIFO 队列取一个 segment，基于真实前缀调用 drafter 生成 `gamma` 个 token；
+5. segment 上传边缘，边缘 target 验证 draft token；
+6. 若 target argmax 匹配 draft token，则 token 被接受；
+7. 首个不匹配位置产生 correction；
+8. 若 draft 全接受，则 target 产生一个 bonus token；
+9. 设备收到结果后提交 emitted token，必要时重起草后续 segment。
 
 在 `full` 及其异步消融方法中，同一请求可以维护多段乐观前缀。`full` 不以固定的
 `W_default` 限制已起草但尚未按序确认的 segment 数量，而是用

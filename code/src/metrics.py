@@ -205,6 +205,8 @@ EVENT_FIELDS = [
     "start_time_ms",
     "finish_time_ms",
     "compute_ms",
+    "draft_prefill_ms",
+    "target_prefill_ms",
     "queue_wait_ms",
     "uplink_ms",
     "uplink_payload_bytes",

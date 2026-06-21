@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.entities import Segment
-from src.latency import expected_emitted_tokens, verify_latency_ms
+from src.latency import expected_emitted_tokens, target_prefill_latency_ms, verify_latency_ms
 from src.methods import get_method_spec
 from src.model_runner import DraftCandidateTree, DraftTreeNode, FakeModelRunner
 from src.simulator import Simulator
@@ -139,9 +139,10 @@ class SpecEdgeMethodTest(unittest.TestCase):
 
         self.assertEqual(
             simulator._verify_latency_for_segments([segment]),
-            verify_latency_ms(config["edge"], [segment.target_verify_tree_nodes]),
+            verify_latency_ms(config["edge"], [segment.target_verify_tree_nodes])
+            + target_prefill_latency_ms(config["edge"], len(segment.prefix_ids)),
         )
-        self.assertEqual(simulator._segment_payload_tokens(segment), 2)
+        self.assertEqual(simulator._segment_payload_tokens(segment), 3)
 
     def test_specedge_dynamic_batch_collects_same_time_validate_requests(self) -> None:
         config, model_runner, workload = small_config(num_requests=2, output_len=4)
@@ -261,7 +262,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         ]
         self.assertTrue(all(event["draft_model"] == "server_only:medium" for event in draft_events))
         self.assertEqual([event["scheduled_gamma"] for event in draft_events], [4, 1, 4, 1])
-        self.assertEqual([event["compute_ms"] for event in draft_events], [7.0, 4.0, 7.0, 4.0])
+        self.assertEqual([event["compute_ms"] for event in draft_events], [18.0, 4.0, 18.0, 4.0])
         self.assertEqual([event["tree_budget_nodes"] for event in draft_events], [4, 1, 4, 1])
         self.assertTrue(all(event["tree_strategy"] == "linear" for event in draft_events))
         self.assertTrue(all(segment.draft_tree is None for segment in result.segments))
@@ -342,7 +343,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
         self.assertEqual(draft_events[0]["tree_budget_nodes"], 64)
         self.assertGreater(draft_events[1]["tree_budget_nodes"], 1)
         self.assertLessEqual(draft_events[1]["tree_budget_nodes"], 64)
-        self.assertEqual([event["compute_ms"] for event in draft_events], [83.0, 4.0])
+        self.assertEqual([event["compute_ms"] for event in draft_events], [94.0, 4.0])
         self.assertEqual(draft_events[0]["processed_candidate_count"], 80)
         self.assertEqual(draft_events[0]["retained_tree_nodes"], 64)
         self.assertEqual(draft_events[0]["target_verify_tree_nodes"], 64)

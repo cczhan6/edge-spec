@@ -21,8 +21,10 @@ from src.entities import (
 from src.events import Event, EventType
 from src.latency import (
     AcceptanceWindowEstimator,
+    device_prefill_latency_ms,
     draft_latency_ms,
     expected_emitted_tokens,
+    target_prefill_latency_ms,
     target_only_latency_ms,
     verify_latency_ms,
 )
@@ -325,16 +327,39 @@ class Simulator:
 
     def _segment_payload_tokens(self, segment: Segment) -> int:
         if self._is_specedge_runtime():
-            return segment.retained_tree_nodes or segment.tree_budget_nodes
-        return segment.gamma
+            tokens = segment.retained_tree_nodes or segment.tree_budget_nodes
+        else:
+            tokens = segment.gamma
+        if segment.base_pos == 0:
+            tokens += self._prompt_token_count_for_segment(segment)
+        return tokens
 
     def _verify_latency_for_segments(self, segments: Sequence[Segment]) -> float:
         if self._is_specedge_runtime():
-            return verify_latency_ms(
+            duration_ms = verify_latency_ms(
                 self.config["edge"],
                 [segment.target_verify_tree_nodes for segment in segments],
             )
-        return verify_latency_ms(self.config["edge"], [1 for _ in segments])
+        else:
+            duration_ms = verify_latency_ms(self.config["edge"], [1 for _ in segments])
+        return duration_ms + self._target_prefill_latency_for_segments(segments)
+
+    def _target_prefill_latency_for_segments(self, segments: Sequence[Segment]) -> float:
+        return sum(
+            target_prefill_latency_ms(
+                self.config["edge"],
+                self._prompt_token_count_for_segment(segment),
+            )
+            for segment in segments
+            if segment.base_pos == 0
+        )
+
+    def _prompt_token_count_for_segment(self, segment: Segment) -> int:
+        if 0 <= segment.request_id < len(self.requests):
+            return self.requests[segment.request_id].prompt_token_count
+        if segment.base_pos == 0:
+            return len(segment.prefix_ids)
+        return 0
 
     def _server_only_draft_latency_ms(self, token_count: int) -> float:
         if token_count <= 0:
@@ -344,11 +369,29 @@ class Simulator:
             server_only.get("draft_startup_ms", self.config["edge"]["verify_startup_ms"])
         )
         token_rate = float(
-            server_only.get("draft_token_rate_tok_s", self.config["edge"]["target_only_token_rate_tok_s"])
+            server_only.get(
+                "draft_token_rate_tok_s",
+                self.config["edge"]["target_only_token_rate_tok_s"],
+            )
         )
         return startup_ms + (
             1000.0 * token_count / token_rate
         )
+
+    def _server_only_draft_prefill_latency_ms(self, prompt_tokens: int) -> float:
+        if prompt_tokens < 0:
+            raise ValueError("prompt_tokens must be >= 0")
+        server_only = self.config.get("server_only", {})
+        startup_ms = float(
+            server_only.get("draft_startup_ms", self.config["edge"]["verify_startup_ms"])
+        )
+        token_rate = float(
+            server_only.get(
+                "draft_token_rate_tok_s",
+                self.config["edge"]["target_only_token_rate_tok_s"],
+            )
+        )
+        return startup_ms + (1000.0 * prompt_tokens / token_rate)
 
     def _server_only_drafter_profile(self) -> str:
         return str(self.config.get("server_only", {}).get("drafter_profile", "medium"))
@@ -446,7 +489,12 @@ class Simulator:
     def _on_target_only_arrive_edge(self, now_ms: float, request_id: int) -> None:
         request = self.requests[request_id]
         generated_ids = self.model_runner.target_only(request.prompt_ids, request.output_len)
-        compute_ms = target_only_latency_ms(self.config["edge"], len(generated_ids))
+        target_prefill_ms = target_prefill_latency_ms(
+            self.config["edge"],
+            request.prompt_token_count,
+        )
+        decode_ms = target_only_latency_ms(self.config["edge"], len(generated_ids))
+        compute_ms = target_prefill_ms + decode_ms
         lane_id = min(
             range(len(self._target_only_available_ms)),
             key=self._target_only_available_ms.__getitem__,
@@ -468,7 +516,10 @@ class Simulator:
         request.target_only_downlink_payload_bytes = payload_bytes
         request.target_only_downlink_ms = delay_ms
         if generated_ids:
-            first_token_compute_ms = target_only_latency_ms(self.config["edge"], 1)
+            first_token_compute_ms = target_prefill_ms + target_only_latency_ms(
+                self.config["edge"],
+                1,
+            )
             first_token_payload_bytes = self._payload_bytes(1)
             first_token_downlink_ms = self._network_delay_ms(
                 self.devices[request.device_id],
@@ -492,6 +543,7 @@ class Simulator:
                 "start_time_ms": start_ms,
                 "finish_time_ms": finish_ms,
                 "compute_ms": compute_ms,
+                "target_prefill_ms": target_prefill_ms,
                 "uplink_ms": request.target_only_uplink_ms,
                 "uplink_payload_bytes": request.target_only_uplink_payload_bytes,
                 "downlink_ms": delay_ms,
@@ -559,7 +611,14 @@ class Simulator:
         processed_candidates = draft_build.processed_candidate_count
         retained_nodes = draft_build.retained_tree_nodes
         target_verify_nodes = draft_build.target_verify_tree_nodes
-        draft_ms = self._server_only_draft_latency_ms(processed_candidates)
+        draft_prefill_ms = (
+            self._server_only_draft_prefill_latency_ms(request.prompt_token_count)
+            if request.committed_pos == 0
+            else 0.0
+        )
+        draft_ms = draft_prefill_ms + self._server_only_draft_latency_ms(
+            processed_candidates
+        )
         segment = Segment(
             segment_id=len(self.segments),
             request_id=request.request_id,
@@ -603,6 +662,7 @@ class Simulator:
                 "start_time_ms": now_ms,
                 "finish_time_ms": now_ms + draft_ms,
                 "compute_ms": draft_ms,
+                "draft_prefill_ms": draft_prefill_ms,
                 "tree_budget_nodes": segment.tree_budget_nodes,
                 "draft_compute_nodes": segment.draft_compute_nodes,
                 "processed_candidate_count": segment.processed_candidate_count,
@@ -640,6 +700,7 @@ class Simulator:
                 self._stale_segment(segment)
             return
         result = self._verify_segment(segment)
+        target_prefill_ms = self._target_prefill_latency_for_segments([segment])
         duration_ms = self._verify_latency_for_segments([segment])
         start_ms = max(now_ms, self._server_only_verify_available_ms)
         finish_ms = start_ms + duration_ms
@@ -664,6 +725,7 @@ class Simulator:
                 "start_time_ms": start_ms,
                 "finish_time_ms": finish_ms,
                 "compute_ms": duration_ms,
+                "target_prefill_ms": target_prefill_ms,
                 "queue_wait_ms": start_ms - now_ms,
                 "tree_budget_nodes": segment.tree_budget_nodes,
                 "draft_compute_nodes": segment.draft_compute_nodes,
@@ -870,14 +932,23 @@ class Simulator:
             if draft_tree is not None
             else 1
         )
+        base_pos = request.committed_pos + speculative_count
+        draft_prefill_ms = (
+            device_prefill_latency_ms(runtime.device, request.prompt_token_count)
+            if base_pos == 0
+            else 0.0
+        )
         fresh_processed_candidates = (
             fresh_build.processed_candidate_count
             if use_proactive and fresh_build is not None
             else processed_candidates
         )
-        analytical_ms = draft_latency_ms(runtime.device, processed_candidates)
+        analytical_ms = draft_prefill_ms + draft_latency_ms(
+            runtime.device,
+            processed_candidates,
+        )
         fresh_compute_ms = (
-            draft_latency_ms(runtime.device, fresh_processed_candidates)
+            draft_prefill_ms + draft_latency_ms(runtime.device, fresh_processed_candidates)
             if fresh_ids
             else 0.0
         )
@@ -891,7 +962,10 @@ class Simulator:
         pipeline_edge_cycle_ms = 0.0
         pipeline_alignment_error_ms = 0.0
         if self.spec.runtime == "specedge":
-            alpha = self.acceptance.estimate(request.request_id, runtime.device.acceptance_prior)
+            alpha = self.acceptance.estimate(
+                request.request_id,
+                runtime.device.acceptance_prior,
+            )
             pipeline_target_ms = self._specedge_pipeline_target_ms(now_ms)
             network_cycle_ms = self._specedge_edge_cycle_ms(
                 runtime.device,
@@ -906,7 +980,7 @@ class Simulator:
             device_id=request.device_id,
             draft_model=runtime.device.drafter_profile,
             prefix_version=request.prefix_version,
-            base_pos=request.committed_pos + speculative_count,
+            base_pos=base_pos,
             scheduled_gamma=beam_len,
             prefix_ids=prefix_ids,
             draft_ids=draft_ids,
@@ -956,6 +1030,7 @@ class Simulator:
                 "start_time_ms": now_ms,
                 "finish_time_ms": now_ms + duration_ms,
                 "compute_ms": duration_ms,
+                "draft_prefill_ms": draft_prefill_ms,
                 "queue_wait_ms": segment.draft_queue_wait_ms,
                 "tree_budget_nodes": segment.tree_budget_nodes,
                 "draft_compute_nodes": segment.draft_compute_nodes,
@@ -985,6 +1060,7 @@ class Simulator:
                     "start_time_ms": now_ms,
                     "finish_time_ms": now_ms + duration_ms,
                     "compute_ms": duration_ms,
+                    "draft_prefill_ms": draft_prefill_ms,
                     "tree_budget_nodes": segment.tree_budget_nodes,
                     "draft_compute_nodes": segment.draft_compute_nodes,
                     "processed_candidate_count": segment.processed_candidate_count,
@@ -1219,7 +1295,9 @@ class Simulator:
                     self._stale_segment(segment)
                 continue
             result = self._verify_segment(segment)
+            target_prefill_ms = self._target_prefill_latency_for_segments([segment])
             duration_ms = self.predict_verify_latency_ms(segment.verify_gamma)
+            duration_ms += target_prefill_ms
             self._verification_results[segment.segment_id] = result
             segment.status = "verifying"
             segment.verify_start_time_ms = now_ms
@@ -1247,6 +1325,7 @@ class Simulator:
                     "start_time_ms": now_ms,
                     "finish_time_ms": segment.verify_done_time_ms,
                     "compute_ms": duration_ms,
+                    "target_prefill_ms": target_prefill_ms,
                     "queue_wait_ms": queue_wait_ms,
                     "tree_budget_nodes": segment.tree_budget_nodes,
                     "draft_compute_nodes": segment.draft_compute_nodes,
@@ -1346,6 +1425,7 @@ class Simulator:
         waiting_ms = sum(now_ms - float(segment.edge_arrival_time_ms) for segment in segments)
         self._batch_waiting_time_ms += waiting_ms
         results = self._verify_segments(segments)
+        target_prefill_ms = self._target_prefill_latency_for_segments(segments)
         duration_ms = self._verify_latency_for_segments(segments)
         finish_ms = now_ms + duration_ms
         if self._is_specedge_runtime():
@@ -1369,6 +1449,7 @@ class Simulator:
                 "start_time_ms": now_ms,
                 "finish_time_ms": finish_ms,
                 "compute_ms": duration_ms,
+                "target_prefill_ms": target_prefill_ms,
                 "tree_budget_nodes": max(segment.tree_budget_nodes for segment in segments),
                 "draft_compute_nodes": max(segment.draft_compute_nodes for segment in segments),
                 "processed_candidate_count": max(segment.processed_candidate_count for segment in segments),
