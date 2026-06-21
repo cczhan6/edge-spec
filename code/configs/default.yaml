@@ -1,6 +1,6 @@
 simulation:
   seed: 42
-  num_requests: 200
+  num_requests: 480
   num_devices: 8
   output_len_choices: [64, 128, 256]
   request_arrival: burst

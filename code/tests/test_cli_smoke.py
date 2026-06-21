@@ -17,7 +17,7 @@ class CliSmokeTest(unittest.TestCase):
             config.write_text(
                 Path("configs/default.yaml")
                 .read_text()
-                .replace("num_requests: 200", "num_requests: 3")
+                .replace("num_requests: 480", "num_requests: 3")
                 .replace("output_len_choices: [64, 128, 256]", "output_len_choices: [4]"),
                 encoding="utf-8",
             )
@@ -70,7 +70,7 @@ class CliSmokeTest(unittest.TestCase):
             config.write_text(
                 Path("configs/default.yaml")
                 .read_text()
-                .replace("num_requests: 200", "num_requests: 2")
+                .replace("num_requests: 480", "num_requests: 2")
                 .replace("output_len_choices: [64, 128, 256]", "output_len_choices: [4]"),
                 encoding="utf-8",
             )
@@ -123,7 +123,7 @@ class CliSmokeTest(unittest.TestCase):
             config.write_text(
                 Path("configs/default.yaml")
                 .read_text()
-                .replace("num_requests: 200", "num_requests: 2")
+                .replace("num_requests: 480", "num_requests: 2")
                 .replace("output_len_choices: [64, 128, 256]", "output_len_choices: [4]"),
                 encoding="utf-8",
             )
@@ -167,7 +167,7 @@ class CliSmokeTest(unittest.TestCase):
             config.write_text(
                 Path("configs/default.yaml")
                 .read_text()
-                .replace("num_requests: 200", "num_requests: 3")
+                .replace("num_requests: 480", "num_requests: 3")
                 .replace("output_len_choices: [64, 128, 256]", "output_len_choices: [4]"),
                 encoding="utf-8",
             )
@@ -217,7 +217,7 @@ class CliSmokeTest(unittest.TestCase):
             config.write_text(
                 Path("configs/default.yaml")
                 .read_text()
-                .replace("num_requests: 200", "num_requests: 2")
+                .replace("num_requests: 480", "num_requests: 2")
                 .replace("output_len_choices: [64, 128, 256]", "output_len_choices: [4]"),
                 encoding="utf-8",
             )

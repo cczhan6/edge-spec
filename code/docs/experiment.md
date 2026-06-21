@@ -37,7 +37,7 @@
 默认数据集为 `data/spec_bench/question.jsonl`，共 480 条。仿真读取每条样本的第一轮
 prompt，并按 `simulation.seed` 无放回抽样。
 
-`simulation.num_requests` 表示所有设备合计请求数。默认值为 200，默认输出长度从
+`simulation.num_requests` 表示所有设备合计请求数。默认值为 480，默认输出长度从
 `[64, 128, 256]` 中随机选择。
 
 SpecBench 原始 13 个 `category` 会归并为 6 个顶层类别：
