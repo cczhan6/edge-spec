@@ -224,11 +224,12 @@ class SpecEdgeMethodTest(unittest.TestCase):
             [request.generated_ids for request in server_only.requests],
             [request.generated_ids for request in target.requests],
         )
-        for server_request, target_request in zip(server_only.requests, target.requests):
+        for server_request in server_only.requests:
             self.assertGreater(server_request.target_only_downlink_ms, 0.0)
             self.assertEqual(
                 server_request.target_only_downlink_payload_bytes,
-                target_request.target_only_downlink_payload_bytes,
+                int(config["network"]["packet_header_bytes"])
+                + len(server_request.generated_ids) * int(config["network"]["packet_token_bytes"]),
             )
         self.assertTrue(all(segment.uplink_delay_ms == 0.0 for segment in server_only.segments))
         self.assertTrue(all(segment.downlink_delay_ms == 0.0 for segment in server_only.segments))

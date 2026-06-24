@@ -426,19 +426,10 @@ class Simulator:
         start_ms = max(now_ms, self._target_only_available_ms[lane_id])
         finish_ms = start_ms + compute_ms
         self._target_only_available_ms[lane_id] = finish_ms
-        payload_bytes = self._payload_bytes(len(generated_ids))
-        delay_ms = self._network_delay_ms(
-            self.devices[request.device_id],
-            "downlink",
-            f"target-only:{request_id}",
-            payload_bytes,
-        )
         request.generated_ids = generated_ids
         request.edge_generated_ids = generated_ids.copy()
         request.target_only_queue_wait_ms = start_ms - now_ms
         request.target_only_compute_ms = compute_ms
-        request.target_only_downlink_payload_bytes = payload_bytes
-        request.target_only_downlink_ms = delay_ms
         self._trace.append(
             {
                 "event": "target_only_service",
@@ -450,11 +441,9 @@ class Simulator:
                 "start_time_ms": start_ms,
                 "finish_time_ms": finish_ms,
                 "compute_ms": compute_ms,
-                "downlink_ms": delay_ms,
-                "downlink_payload_bytes": payload_bytes,
             }
         )
-        self._schedule(finish_ms + delay_ms, EventType.REQUEST_FINISH, request_id)
+        self._schedule(finish_ms, EventType.REQUEST_FINISH, request_id)
 
     def _on_server_only_arrive_edge(self, now_ms: float, request_id: int) -> None:
         self._enqueue_server_only_request(self.requests[request_id], now_ms)

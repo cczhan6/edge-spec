@@ -32,13 +32,15 @@ class TargetOnlyCapacityTest(unittest.TestCase):
             [event["lane_id"] for event in result.event_trace if event["event"] == "target_only_service"],
             [0, 0],
         )
-        self.assertGreater(requests[0].target_only_downlink_ms, 0.0)
-        self.assertEqual(requests[0].target_only_downlink_payload_bytes, 144)
+        self.assertEqual(requests[0].target_only_downlink_ms, 0.0)
+        self.assertEqual(requests[0].target_only_downlink_payload_bytes, 0)
         service = next(
             event for event in result.event_trace if event["event"] == "target_only_service"
         )
         self.assertNotIn("uplink_ms", service)
         self.assertNotIn("uplink_payload_bytes", service)
+        self.assertNotIn("downlink_ms", service)
+        self.assertNotIn("downlink_payload_bytes", service)
 
 
 if __name__ == "__main__":

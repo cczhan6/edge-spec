@@ -1,11 +1,11 @@
 # Baseline Reconstruction Status
 
-Current milestone: M0
+Current milestone: M1
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
-| M0 Audit existing code vs contract | ready to commit | pending | `pytest -q` -> 87 passed |
-| M1 Target-only cleanup and correctness tests | pending | - | - |
+| M0 Audit existing code vs contract | complete | `d71648d` | `pytest -q` -> 87 passed |
+| M1 Target-only cleanup and correctness tests | ready to commit | pending | `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` -> 7 passed; `pytest -q` -> 93 passed |
 | M2 Shared linear SD semantics | pending | - | - |
 | M3 Server-only-Linear | pending | - | - |
 | M4 SpecEdge-Linear | pending | - | - |
@@ -116,3 +116,42 @@ None for M1-M4. DiP-SD M6 needs deterministic solver choices because the paper d
 ## Decisions Requiring Human Review
 
 None at M0.
+
+## M1 Target-Only Cleanup And Correctness Tests
+
+### Completion Conditions
+
+- Added target-only contract tests.
+- Confirmed `target_only` is registered as a non-speculative runtime.
+- Confirmed target-only output equals direct greedy target output from the model runner.
+- Removed target-only decode-stage downlink latency and payload from execution trace and request state.
+- Preserved single logical target resource serialization and FCFS service order.
+- Confirmed target-only creates no draft, verify, batch, segment, or network trace fields.
+- Confirmed target-only speculative counters remain zero.
+
+### Changed Files
+
+- Added `tests/test_target_only.py`.
+- Updated `tests/test_target_only_capacity.py`.
+- Updated `tests/test_specedge_methods.py` to stop coupling legacy server-only response payload to target-only network fields.
+- Updated `src/simulator.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` before implementation -> 3 failed, 4 passed; failures were target-only downlink fields.
+- `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` after implementation -> 7 passed.
+- `pytest -q` after implementation -> 92 passed, 1 failed; the failure was a legacy server-only test expecting target-only downlink payload.
+- `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` after legacy test update -> 7 passed.
+- `pytest -q` after legacy test update -> 93 passed.
+
+### Contract Deviations Remaining
+
+- `VerificationResult` still lacks the contract field names `committed_tokens` and `correction_token`; planned for M2.
+- Canonical method names for server-only, SpecEdge, and DiP-SD are still absent; planned for M3-M9.
+- Legacy `server_only` still models final response downlink; planned for M3.
+- DiP-SD remains unimplemented; planned for M5-M6.
+
+### Decisions
+
+- Target-only request fields `target_only_downlink_ms` and `target_only_downlink_payload_bytes` remain in the data model for CSV compatibility, but target-only now leaves them at zero.
