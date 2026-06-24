@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M4
+Current milestone: M5
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -8,8 +8,8 @@ Current milestone: M4
 | M1 Target-only cleanup and correctness tests | complete | `84a873c` | `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` -> 7 passed; `pytest -q` -> 93 passed |
 | M2 Shared linear SD semantics | complete | `1c4a9b6` | `pytest -q tests/test_linear_sd_core.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 100 passed |
 | M3 Server-only-Linear | complete | `e007e74` | `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 18 passed; `pytest -q` -> 105 passed |
-| M4 SpecEdge-Linear | ready to commit | pending | `pytest -q tests/test_specedge_linear.py tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 25 passed; `pytest -q` -> 112 passed |
-| M5 DiP-SD fixed pipeline | pending | - | - |
+| M4 SpecEdge-Linear | complete | `bdaa859` | `pytest -q tests/test_specedge_linear.py tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 25 passed; `pytest -q` -> 112 passed |
+| M5 DiP-SD fixed pipeline | ready to commit | pending | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 20 passed; `pytest -q` -> 119 passed |
 | M6 DiP-SD optimizer | pending | - | - |
 | M7 Shared tree drafting and verification | pending | - | - |
 | M8 Server-only-Tree | pending | - | - |
@@ -269,3 +269,45 @@ None at M0.
 ### Decisions
 
 - `specedge_linear` keeps SpecEdge deployment, network, server batching, and proactive state machine, but replaces both initial and proactive tree strategies with linear strategies at simulator initialization.
+
+## M5 DiP-SD Fixed Pipeline
+
+### Completion Conditions
+
+- Added fixed DiP-SD epoch planning in `src/dip_sd.py`.
+- Registered temporary method `dip_sd_greedy`.
+- Kept canonical `dip_sd` unsupported until optimizer completion.
+- Added DiP-SD config section with fixed batch count, fixed draft length, and capacity limits.
+- Modeled local linear draft, upload, ordered batch verification, download, synchronization, and next-round draft.
+- Enforced one unverified draft per request through synchronization-before-redraft tests.
+- Enforced complete, disjoint, non-empty ordered batches.
+- Enforced epoch-barrier admission for newly arrived requests.
+- Confirmed DiP-SD fixed pipeline output equals target-only greedy output.
+
+### Changed Files
+
+- Added `src/dip_sd.py`.
+- Added `tests/test_dip_sd.py`.
+- Updated `src/simulator.py`.
+- Updated `src/methods.py`.
+- Updated `src/config.py`.
+- Updated `configs/default.yaml`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` after first implementation -> 19 passed, 1 failed; failure showed new arrivals were admitted at an epoch barrier but draft start still used original arrival time.
+- `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` after admission ready-time fix -> 20 passed.
+- `pytest -q` after implementation -> 119 passed.
+
+### Contract Deviations Remaining
+
+- `dip_sd` canonical method is still intentionally unsupported because the optimizer is not complete. The available method is `dip_sd_greedy`.
+- The M5 pipeline uses fixed grouping and fixed draft length only; M6 must add deterministic optimizer and then expose `dip_sd`.
+- Server-only batch sizes greater than one remain a known gap.
+- Tree baselines remain absent.
+
+### Decisions
+
+- New arrivals are admitted only at epoch barriers by setting request ready time to the barrier time when admitted.
+- M5 uses configured profile acceptance only for future optimizer plumbing; semantic verification still determines actual committed tokens.

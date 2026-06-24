@@ -164,6 +164,20 @@ def validate_config(config: dict[str, Any]) -> None:
         )
         if server_max_budget < server_max_beam_len:
             raise ValueError("server_only.max_budget must be at least max_beam_len")
+    dip_sd = config.get("dip_sd", {})
+    if dip_sd:
+        for key in (
+            "batch_count",
+            "draft_length",
+            "max_active_requests",
+            "max_batch_size",
+            "min_draft_length",
+            "max_draft_length",
+        ):
+            if int(dip_sd[key]) <= 0:
+                raise ValueError(f"dip_sd.{key} must be positive")
+        if int(dip_sd["min_draft_length"]) > int(dip_sd["max_draft_length"]):
+            raise ValueError("dip_sd.min_draft_length must not exceed max_draft_length")
     for pool_name in ("heterogeneous", "medium_only"):
         pool = config["device_pools"].get(pool_name)
         if not pool or not pool.get("templates"):

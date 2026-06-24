@@ -123,3 +123,14 @@ specedge:
   server_batch_type: static
   server_batch_size: 1
   server_batch_timeout_ms: null
+
+dip_sd:
+  adaptation: online_epoch_barrier
+  optimizer: fixed_greedy
+  batch_count: 2
+  draft_length: 2
+  max_active_requests: 8
+  max_batch_size: 4
+  min_draft_length: 1
+  max_draft_length: 4
+  acceptance_estimator: configured_profile

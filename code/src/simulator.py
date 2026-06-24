@@ -8,6 +8,7 @@ from typing import Any, Callable, Sequence
 
 from src.communication import network_delay_ms
 from src.config import build_devices
+from src.dip_sd import build_fixed_epoch_plan
 from src.entities import (
     ACTIVE_SEGMENT_STATUSES,
     FINAL_SEGMENT_STATUSES,
@@ -121,6 +122,8 @@ class Simulator:
         self._pipeline_idle_bubble_ms = 0.0
 
     def run(self) -> SimulationResult:
+        if self.spec.runtime == "dip_sd":
+            return self._run_dip_sd_greedy()
         self._schedule_request_arrivals()
         while self.events or self._batch_buffer:
             if not self.events:
@@ -136,6 +139,278 @@ class Simulator:
         ]
         if unfinished:
             raise RuntimeError(f"simulation ended with unfinished requests: {unfinished}")
+        return SimulationResult(
+            method=self.spec.name,
+            scenario=self.scenario,
+            requests=self.requests,
+            segments=self.segments,
+            devices=self.device_runtimes,
+            lanes=self.lanes,
+            batch_waiting_time_ms=self._batch_waiting_time_ms,
+            phase_waiting_time_ms=self._phase_waiting_time_ms,
+            lane_queue_wait_times_ms=self._lane_queue_wait_times_ms,
+            event_trace=self._trace,
+        )
+
+    def _run_dip_sd_greedy(self) -> SimulationResult:
+        self._schedule_request_arrivals()
+        self.events.clear()
+        dip_config = self.config["dip_sd"]
+        max_active = int(dip_config["max_active_requests"])
+        waiting = [request.request_id for request in self.requests]
+        active: list[int] = []
+        request_ready_ms = {
+            request.request_id: request.arrival_time_ms for request in self.requests
+        }
+        server_available_ms = 0.0
+        epoch_index = 0
+
+        while any(request.status != "finished" for request in self.requests):
+            now_ms = server_available_ms
+            if not active:
+                next_arrival = min(
+                    (
+                        self.requests[request_id].arrival_time_ms
+                        for request_id in waiting
+                    ),
+                    default=now_ms,
+                )
+                now_ms = max(now_ms, next_arrival)
+            eligible = [
+                request_id
+                for request_id in list(waiting)
+                if self.requests[request_id].arrival_time_ms <= now_ms
+            ]
+            for request_id in eligible:
+                if len(active) >= max_active:
+                    break
+                waiting.remove(request_id)
+                active.append(request_id)
+                request_ready_ms[request_id] = max(request_ready_ms[request_id], now_ms)
+                self._trace.append(
+                    {
+                        "event": "dip_sd_admit",
+                        "method": self.spec.name,
+                        "request_id": request_id,
+                        "epoch": epoch_index,
+                        "time_ms": now_ms,
+                    }
+                )
+            active = [
+                request_id
+                for request_id in active
+                if self.requests[request_id].status == "running"
+            ]
+            if not active:
+                server_available_ms = now_ms
+                continue
+
+            plan = build_fixed_epoch_plan(
+                active,
+                batch_count=int(dip_config["batch_count"]),
+                draft_length=int(dip_config["draft_length"]),
+                min_draft_length=int(dip_config["min_draft_length"]),
+                max_draft_length=int(dip_config["max_draft_length"]),
+                max_batch_size=int(dip_config["max_batch_size"]),
+            )
+            self._trace.append(
+                {
+                    "event": "dip_sd_epoch_plan",
+                    "method": self.spec.name,
+                    "epoch": epoch_index,
+                    "time_ms": now_ms,
+                    "batches": [list(batch) for batch in plan.batches],
+                    "draft_lengths": dict(plan.draft_lengths),
+                }
+            )
+            epoch_result_arrivals: list[float] = []
+            for batch_index, batch in enumerate(plan.batches):
+                segments: list[Segment] = []
+                for request_id in batch:
+                    request = self.requests[request_id]
+                    if request.status != "running":
+                        continue
+                    remaining = request.output_len - request.committed_pos
+                    if remaining <= 0:
+                        continue
+                    device = self.devices[request.device_id]
+                    prefix_ids = request.prompt_ids + request.generated_ids
+                    draft_len = min(plan.draft_lengths[request_id], remaining)
+                    draft_start_ms = max(
+                        request_ready_ms[request_id],
+                        request.arrival_time_ms,
+                    )
+                    draft_ids = self.model_runner.draft(
+                        device.drafter_profile,
+                        prefix_ids,
+                        draft_len,
+                    )
+                    if not draft_ids:
+                        raise RuntimeError("semantic drafter returned an empty dip_sd segment")
+                    draft_compute_ms = draft_latency_ms(device, len(draft_ids))
+                    draft_done_ms = draft_start_ms + draft_compute_ms
+                    uplink_payload_bytes = self._payload_bytes(len(draft_ids))
+                    uplink_delay_ms = self._network_delay_ms(
+                        device,
+                        "uplink",
+                        f"dip-sd-up:{epoch_index}:{request_id}",
+                        uplink_payload_bytes,
+                    )
+                    edge_arrival_ms = draft_done_ms + uplink_delay_ms
+                    segment = Segment(
+                        segment_id=len(self.segments),
+                        request_id=request_id,
+                        device_id=request.device_id,
+                        draft_model=device.drafter_profile,
+                        prefix_version=request.prefix_version,
+                        base_pos=request.committed_pos,
+                        scheduled_gamma=len(draft_ids),
+                        prefix_ids=prefix_ids,
+                        draft_ids=list(draft_ids),
+                        create_time_ms=draft_start_ms,
+                        draft_start_time_ms=draft_start_ms,
+                        draft_compute_ms=draft_compute_ms,
+                        draft_analytical_ms=draft_compute_ms,
+                        uplink_delay_ms=uplink_delay_ms,
+                        uplink_payload_tokens=len(draft_ids),
+                        uplink_payload_bytes=uplink_payload_bytes,
+                        edge_arrival_time_ms=edge_arrival_ms,
+                        tree_strategy="linear",
+                        tree_budget_nodes=len(draft_ids),
+                        draft_compute_nodes=len(draft_ids),
+                        processed_candidate_count=len(draft_ids),
+                        retained_tree_nodes=len(draft_ids),
+                        target_verify_tree_nodes=1,
+                        beam_len=len(draft_ids),
+                    )
+                    self.segments.append(segment)
+                    segments.append(segment)
+                    runtime = self.device_runtimes[request.device_id]
+                    runtime.total_busy_time_ms += draft_compute_ms
+                    runtime.generated_draft_tokens += segment.proposed_count
+                    runtime.selected_gammas.append(len(draft_ids))
+                    self._trace.append(
+                        {
+                            "event": "dip_sd_draft",
+                            "method": self.spec.name,
+                            "epoch": epoch_index,
+                            "batch_index": batch_index,
+                            "request_id": request_id,
+                            "segment_id": segment.segment_id,
+                            "device_id": request.device_id,
+                            "draft_model": segment.draft_model,
+                            "scheduled_gamma": segment.scheduled_gamma,
+                            "start_time_ms": draft_start_ms,
+                            "finish_time_ms": draft_done_ms,
+                            "compute_ms": draft_compute_ms,
+                            "uplink_ms": uplink_delay_ms,
+                            "uplink_payload_bytes": uplink_payload_bytes,
+                        }
+                    )
+                if not segments:
+                    continue
+                batch_ready_ms = max(float(segment.edge_arrival_time_ms) for segment in segments)
+                verify_start_ms = max(server_available_ms, batch_ready_ms)
+                if verify_start_ms > server_available_ms:
+                    self._pipeline_idle_bubble_ms += verify_start_ms - server_available_ms
+                results = self._verify_segments(segments)
+                verify_ms = self._verify_latency_for_segments(segments)
+                verify_done_ms = verify_start_ms + verify_ms
+                server_available_ms = verify_done_ms
+                self._trace.append(
+                    {
+                        "event": "dip_sd_batch_verify",
+                        "method": self.spec.name,
+                        "epoch": epoch_index,
+                        "batch_index": batch_index,
+                        "segment_ids": [segment.segment_id for segment in segments],
+                        "batch_size": len(segments),
+                        "start_time_ms": verify_start_ms,
+                        "finish_time_ms": verify_done_ms,
+                        "compute_ms": verify_ms,
+                    }
+                )
+                for segment, result in zip(segments, results):
+                    request = self.requests[segment.request_id]
+                    remaining = request.output_len - request.committed_pos
+                    emitted_ids = list(result.committed_tokens[:remaining])
+                    segment.accepted_count = min(result.accepted_count, len(segment.draft_ids))
+                    segment.emitted_ids = emitted_ids
+                    segment.result_base_pos = segment.base_pos
+                    segment.verify_start_time_ms = verify_start_ms
+                    segment.verify_done_time_ms = verify_done_ms
+                    segment.verify_compute_ms = verify_ms
+                    segment.status = "rejected" if result.rejected else "accepted"
+                    request.accepted_tokens += segment.accepted_count
+                    self.device_runtimes[segment.device_id].accepted_draft_tokens += segment.accepted_count
+                    if result.rejected:
+                        request.rejected_count += 1
+                        request.rollback_count += 1
+                        request.wasted_draft_tokens += max(
+                            0,
+                            segment.proposed_count - segment.accepted_count,
+                        )
+                    request.edge_generated_ids.extend(emitted_ids)
+                    downlink_payload_bytes = self._payload_bytes(len(emitted_ids))
+                    downlink_delay_ms = self._network_delay_ms(
+                        self.devices[segment.device_id],
+                        "downlink",
+                        f"dip-sd-down:{epoch_index}:{segment.request_id}",
+                        downlink_payload_bytes,
+                    )
+                    segment.downlink_payload_bytes = downlink_payload_bytes
+                    segment.downlink_delay_ms = downlink_delay_ms
+                    result_arrival_ms = verify_done_ms + downlink_delay_ms
+                    request.generated_ids.extend(emitted_ids)
+                    request_ready_ms[request.request_id] = result_arrival_ms
+                    epoch_result_arrivals.append(result_arrival_ms)
+                    self._trace.append(
+                        {
+                            "event": "dip_sd_result",
+                            "method": self.spec.name,
+                            "epoch": epoch_index,
+                            "batch_index": batch_index,
+                            "request_id": request.request_id,
+                            "segment_id": segment.segment_id,
+                            "accepted_count": segment.accepted_count,
+                            "emitted_count": segment.emitted_count,
+                            "finish_time_ms": result_arrival_ms,
+                            "downlink_ms": downlink_delay_ms,
+                            "downlink_payload_bytes": downlink_payload_bytes,
+                        }
+                    )
+                    if request.generated_ids and (
+                        len(request.generated_ids) >= request.output_len
+                        or (
+                            self.model_runner.eos_token_id is not None
+                            and self.model_runner.eos_token_id in request.generated_ids
+                        )
+                    ):
+                        request.status = "finished"
+                        request.finish_time_ms = result_arrival_ms
+                        self._trace.append(
+                            {
+                                "event": "request_finish",
+                                "method": self.spec.name,
+                                "request_id": request.request_id,
+                                "device_id": request.device_id,
+                                "finish_time_ms": result_arrival_ms,
+                            }
+                        )
+                        if self._progress_callback is not None:
+                            self._progress_callback(
+                                sum(item.status == "finished" for item in self.requests),
+                                len(self.requests),
+                            )
+            epoch_end_ms = max([server_available_ms, *epoch_result_arrivals], default=server_available_ms)
+            server_available_ms = epoch_end_ms
+            active = [
+                request_id
+                for request_id in active
+                if self.requests[request_id].status == "running"
+            ]
+            epoch_index += 1
+
         return SimulationResult(
             method=self.spec.name,
             scenario=self.scenario,
