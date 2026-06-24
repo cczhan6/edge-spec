@@ -6,6 +6,7 @@ from typing import Any
 
 SUPPORTED_METHODS = (
     "target_only",
+    "server_only_linear",
     "sync_batch_sd",
     "SpecEdge",
     "server_only",
@@ -37,6 +38,7 @@ class MethodSpec:
     global_batch: bool = False
     batch_timeout: bool = False
     bonus_retarget: bool = False
+    candidate_strategy: str | None = None
 
 
 def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
@@ -45,6 +47,18 @@ def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
     num_lanes = int(config["edge"]["num_lanes"])
     if name == "target_only":
         return MethodSpec(name, "target_only", "heterogeneous", 0, 0, False, "none", "none")
+    if name == "server_only_linear":
+        return MethodSpec(
+            name,
+            "server_only_specedge",
+            "heterogeneous",
+            1,
+            0,
+            False,
+            "none",
+            "fine_grained",
+            candidate_strategy="linear",
+        )
     if name == "sync_batch_sd":
         return MethodSpec(name, "sync", "heterogeneous", 1, 0, True, "global_batch", "fine_grained", global_batch=True, batch_timeout=True)
     if name == "SpecEdge":

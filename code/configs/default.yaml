@@ -94,6 +94,7 @@ sync_batch:
   global_batch_timeout_ms: 20
 
 server_only:
+  batch_size: 1
   drafter_profile: medium
   tree_draft_strategy: specexec_approx
   max_n_beams: 32

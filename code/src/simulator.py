@@ -490,7 +490,20 @@ class Simulator:
             remaining,
         )
         drafter_profile = self._server_only_drafter_profile()
-        tree_plan = self._server_only_tree_plan(gamma)
+        if self.spec.candidate_strategy == "linear":
+            tree_plan = DraftTreePlan(
+                strategy="linear",
+                path_token_count=gamma,
+                tree_budget_nodes=gamma,
+                draft_compute_nodes=gamma,
+                target_verify_nodes=1 if gamma else 0,
+                max_n_beams=1,
+                max_beam_len=gamma,
+                max_branch_width=1,
+                max_budget=gamma,
+            )
+        else:
+            tree_plan = self._server_only_tree_plan(gamma)
         draft_build = self._draft_for_plan(
             drafter_profile,
             prefix_ids,
@@ -538,6 +551,7 @@ class Simulator:
             {
                 "event": "server_only_draft",
                 "method": self.spec.name,
+                "resource": "server_draft_gpu",
                 "request_id": request.request_id,
                 "segment_id": segment.segment_id,
                 "device_id": request.device_id,
@@ -599,6 +613,7 @@ class Simulator:
             {
                 "event": "server_only_verify",
                 "method": self.spec.name,
+                "resource": "server_target_gpu",
                 "segment_id": segment.segment_id,
                 "request_id": segment.request_id,
                 "device_id": segment.device_id,
@@ -978,6 +993,8 @@ class Simulator:
         if self.spec.runtime == "specedge":
             return max(1, min(self._specedge_tree_strategy.max_beam_len, remaining))
         if self._is_server_only_runtime():
+            if self.spec.candidate_strategy == "linear":
+                return max(1, min(fixed, remaining))
             return max(1, min(self._server_only_tree_strategy.max_beam_len, remaining))
         if not self.spec.adaptive_gamma:
             return max(1, fixed)
@@ -1439,31 +1456,31 @@ class Simulator:
             )
         segment.downlink_payload_bytes = payload_bytes
         segment.downlink_delay_ms = delay_ms
-        self._trace.append(
-            {
-                "event": "verification_result",
-                "method": self.spec.name,
-                "segment_id": segment.segment_id,
-                "request_id": segment.request_id,
-                "device_id": segment.device_id,
-                "draft_model": segment.draft_model,
-                "scheduled_gamma": segment.scheduled_gamma,
-                "verify_gamma": segment.verify_gamma,
-                "accepted_count": segment.accepted_count,
-                "proposed_count": segment.proposed_count,
-                "emitted_count": segment.emitted_count,
-                "finish_time_ms": now_ms,
-                "downlink_ms": delay_ms,
-                "downlink_payload_bytes": payload_bytes,
-                "tree_budget_nodes": segment.tree_budget_nodes,
-                "draft_compute_nodes": segment.draft_compute_nodes,
-                "processed_candidate_count": segment.processed_candidate_count,
-                "retained_tree_nodes": segment.retained_tree_nodes,
-                "target_verify_tree_nodes": segment.target_verify_tree_nodes,
-                "tree_strategy": segment.tree_strategy,
-                "tree_path_switched": segment.tree_path_switched,
-            }
-        )
+        trace_event = {
+            "event": "verification_result",
+            "method": self.spec.name,
+            "segment_id": segment.segment_id,
+            "request_id": segment.request_id,
+            "device_id": segment.device_id,
+            "draft_model": segment.draft_model,
+            "scheduled_gamma": segment.scheduled_gamma,
+            "verify_gamma": segment.verify_gamma,
+            "accepted_count": segment.accepted_count,
+            "proposed_count": segment.proposed_count,
+            "emitted_count": segment.emitted_count,
+            "finish_time_ms": now_ms,
+            "tree_budget_nodes": segment.tree_budget_nodes,
+            "draft_compute_nodes": segment.draft_compute_nodes,
+            "processed_candidate_count": segment.processed_candidate_count,
+            "retained_tree_nodes": segment.retained_tree_nodes,
+            "target_verify_tree_nodes": segment.target_verify_tree_nodes,
+            "tree_strategy": segment.tree_strategy,
+            "tree_path_switched": segment.tree_path_switched,
+        }
+        if not self._is_server_only_runtime():
+            trace_event["downlink_ms"] = delay_ms
+            trace_event["downlink_payload_bytes"] = payload_bytes
+        self._trace.append(trace_event)
         result_arrival_ms = now_ms + delay_ms
         if segment.proactive_done_time_ms is not None:
             result_arrival_ms = max(result_arrival_ms, segment.proactive_done_time_ms)
@@ -1692,7 +1709,7 @@ class Simulator:
             or (self.model_runner.eos_token_id is not None and self.model_runner.eos_token_id in request.generated_ids)
         ):
             if self._is_server_only_runtime():
-                self._schedule_server_only_response_downlink(request, now_ms)
+                self._schedule(now_ms, EventType.REQUEST_FINISH, request.request_id)
             else:
                 self._schedule(now_ms, EventType.REQUEST_FINISH, request.request_id)
             return

@@ -213,7 +213,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
             first_proactive["finish_time_ms"],
         )
 
-    def test_server_only_has_response_downlink_and_matches_target_only(self) -> None:
+    def test_server_only_has_no_network_and_matches_target_only(self) -> None:
         config, model_runner, workload = small_config(num_requests=2, output_len=12)
         config["specedge"]["server_batch_size"] = 1
         spec = get_method_spec("server_only", config)
@@ -225,12 +225,8 @@ class SpecEdgeMethodTest(unittest.TestCase):
             [request.generated_ids for request in target.requests],
         )
         for server_request in server_only.requests:
-            self.assertGreater(server_request.target_only_downlink_ms, 0.0)
-            self.assertEqual(
-                server_request.target_only_downlink_payload_bytes,
-                int(config["network"]["packet_header_bytes"])
-                + len(server_request.generated_ids) * int(config["network"]["packet_token_bytes"]),
-            )
+            self.assertEqual(server_request.target_only_downlink_ms, 0.0)
+            self.assertEqual(server_request.target_only_downlink_payload_bytes, 0)
         self.assertTrue(all(segment.uplink_delay_ms == 0.0 for segment in server_only.segments))
         self.assertTrue(all(segment.downlink_delay_ms == 0.0 for segment in server_only.segments))
         self.assertFalse(
@@ -287,7 +283,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
             second_first_draft["start_time_ms"],
             first_generation_done,
         )
-        self.assertLess(
+        self.assertLessEqual(
             second_first_draft["start_time_ms"],
             first_finish["finish_time_ms"],
         )

@@ -1,13 +1,13 @@
 # Baseline Reconstruction Status
 
-Current milestone: M2
+Current milestone: M3
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
 | M0 Audit existing code vs contract | complete | `d71648d` | `pytest -q` -> 87 passed |
 | M1 Target-only cleanup and correctness tests | complete | `84a873c` | `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` -> 7 passed; `pytest -q` -> 93 passed |
-| M2 Shared linear SD semantics | ready to commit | pending | `pytest -q tests/test_linear_sd_core.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 100 passed |
-| M3 Server-only-Linear | pending | - | - |
+| M2 Shared linear SD semantics | complete | `1c4a9b6` | `pytest -q tests/test_linear_sd_core.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 100 passed |
+| M3 Server-only-Linear | ready to commit | pending | `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 18 passed; `pytest -q` -> 105 passed |
 | M4 SpecEdge-Linear | pending | - | - |
 | M5 DiP-SD fixed pipeline | pending | - | - |
 | M6 DiP-SD optimizer | pending | - | - |
@@ -191,3 +191,45 @@ None at M0.
 ### Decisions
 
 - `VerificationResult` is now contract-first while retaining read-only compatibility properties for existing simulator and tests.
+
+## M3 Server-Only-Linear
+
+### Completion Conditions
+
+- Registered `server_only_linear`.
+- Forced `server_only_linear` to use linear candidates independent of tree config.
+- Added explicit `server_only.batch_size` config validation with default `1`.
+- Added server draft and target logical resource labels to server-only trace events.
+- Removed decode-stage network fields and final response downlink from server-only runtime completion.
+- Confirmed draft/verify round order for server-only-linear.
+- Confirmed server-only-linear output equals target-only greedy output for all-accept and all-reject model runners.
+- Confirmed no proactive events are generated.
+
+### Changed Files
+
+- Added `tests/test_server_only_linear.py`.
+- Updated `src/methods.py`.
+- Updated `src/simulator.py`.
+- Updated `src/config.py`.
+- Updated `configs/default.yaml`.
+- Updated `tests/test_decode_only_initialization.py`.
+- Updated `tests/test_specedge_methods.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` before implementation -> 5 failed, 13 passed; failures were unsupported method and missing server-only-linear semantics.
+- `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` after implementation -> 18 passed.
+- `pytest -q` after implementation -> 102 passed, 3 failed; failures were legacy tests expecting server-only upload/final downlink timing.
+- `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` after legacy test updates -> 18 passed.
+- `pytest -q` after legacy test updates -> 105 passed.
+
+### Contract Deviations Remaining
+
+- Server-only batch sizes greater than one are explicit in config but the current event loop still executes one active server-only request lifecycle at a time. This is a known gap for tree/batched server-only work in M8/M10.
+- `specedge_linear`, `specedge_tree`, `server_only_tree`, and `dip_sd` are still absent.
+- DiP-SD remains unimplemented; planned for M5-M6.
+
+### Decisions
+
+- The legacy `server_only` runtime now follows the decode-only no-network boundary as well. This keeps old tests compatible with the contract while the canonical `server_only_linear` and later `server_only_tree` names are introduced.
