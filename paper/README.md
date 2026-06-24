@@ -3,6 +3,7 @@
 本目录保存论文写作相关材料，不放代码仓库说明文档：
 
 - `core_method.md`: 当前核心方法的论文式描述草稿。
+- `multi_channel_async_pipeline.md`: 多通道异步推测流水线调度机制描述。
 - `figures/`: 论文和说明文档使用的图表。
 - `Park 等 - 2025 - SpecEdge Scalable Edge-Assisted Serving Framework for Interactive LLMs.pdf`: 参考论文。
 

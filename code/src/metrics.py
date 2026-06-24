@@ -27,7 +27,8 @@ MAIN_FIELDS = [
     "p50_latency_ms",
     "p95_latency_ms",
     "p99_latency_ms",
-    "avg_ttft_ms",
+    "avg_tpot_ms",
+    "avg_tbt_ms",
     "makespan_ms",
     "goodput_tok_s",
     "avg_acceptance_rate",
@@ -117,9 +118,9 @@ REQUEST_FIELDS = [
     "method",
     "scenario",
     "start_time_ms",
+    "decode_start_time_ms",
     "finish_time_ms",
     "latency_ms",
-    "ttft_ms",
     "output_len",
     "generated_tokens",
     "accepted_tokens",
@@ -242,11 +243,16 @@ def percentile(values: Iterable[float], percentile_value: float) -> float:
 
 def summarize(result: SimulationResult, num_devices: int) -> tuple[dict[str, Any], dict[str, Any]]:
     latencies = [request.latency_ms for request in result.requests]
-    ttfts = [request.ttft_ms for request in result.requests]
+    output_tokens = [len(request.generated_ids) for request in result.requests]
+    tpot_values = [
+        request.latency_ms / token_count
+        for request, token_count in zip(result.requests, output_tokens)
+        if token_count
+    ]
     starts = [request.start_time_ms for request in result.requests]
     finishes = [float(request.finish_time_ms) for request in result.requests]
     makespan_ms = max(finishes) - min(starts)
-    goodput_tokens = sum(len(request.generated_ids) for request in result.requests)
+    goodput_tokens = sum(output_tokens)
     lane_utilizations = [
         lane.total_busy_time_ms / makespan_ms if makespan_ms else 0.0 for lane in result.lanes
     ]
@@ -309,7 +315,8 @@ def summarize(result: SimulationResult, num_devices: int) -> tuple[dict[str, Any
         "p50_latency_ms": percentile(latencies, 50),
         "p95_latency_ms": percentile(latencies, 95),
         "p99_latency_ms": percentile(latencies, 99),
-        "avg_ttft_ms": _mean(ttfts),
+        "avg_tpot_ms": _mean(tpot_values),
+        "avg_tbt_ms": _mean(tpot_values),
         "makespan_ms": makespan_ms,
         "goodput_tok_s": goodput_tokens / makespan_ms * 1000.0 if makespan_ms else 0.0,
         "avg_acceptance_rate": accepted / proposed if proposed else 0.0,
@@ -394,11 +401,16 @@ def category_rows(result: SimulationResult, num_devices: int) -> list[dict[str, 
             segment for segment in result.segments if segment.request_id in request_ids
         ]
         latencies = [request.latency_ms for request in requests]
-        ttfts = [request.ttft_ms for request in requests]
+        output_tokens = [len(request.generated_ids) for request in requests]
+        tpot_values = [
+            request.latency_ms / token_count
+            for request, token_count in zip(requests, output_tokens)
+            if token_count
+        ]
         starts = [request.start_time_ms for request in requests]
         finishes = [float(request.finish_time_ms) for request in requests]
         makespan_ms = max(finishes) - min(starts)
-        goodput_tokens = sum(len(request.generated_ids) for request in requests)
+        goodput_tokens = sum(output_tokens)
         proposed = sum(segment.proposed_count for segment in segments if segment.accepted_count is not None)
         accepted = sum(int(segment.accepted_count or 0) for segment in segments)
         selected_gammas = [segment.scheduled_gamma for segment in segments]
@@ -413,7 +425,8 @@ def category_rows(result: SimulationResult, num_devices: int) -> list[dict[str, 
             "p50_latency_ms": percentile(latencies, 50),
             "p95_latency_ms": percentile(latencies, 95),
             "p99_latency_ms": percentile(latencies, 99),
-            "avg_ttft_ms": _mean(ttfts),
+            "avg_tpot_ms": _mean(tpot_values),
+            "avg_tbt_ms": _mean(tpot_values),
             "makespan_ms": makespan_ms,
             "goodput_tok_s": goodput_tokens / makespan_ms * 1000.0 if makespan_ms else 0.0,
             "avg_acceptance_rate": accepted / proposed if proposed else 0.0,
@@ -451,9 +464,9 @@ def request_rows(result: SimulationResult) -> list[dict[str, Any]]:
             "method": result.method,
             "scenario": result.scenario,
             "start_time_ms": request.start_time_ms,
+            "decode_start_time_ms": request.decode_start_time_ms,
             "finish_time_ms": request.finish_time_ms,
             "latency_ms": request.latency_ms,
-            "ttft_ms": request.ttft_ms,
             "output_len": request.output_len,
             "generated_tokens": len(request.generated_ids),
             "accepted_tokens": request.accepted_tokens,

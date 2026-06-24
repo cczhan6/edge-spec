@@ -57,6 +57,7 @@ class Request:
     prompt: str
     prompt_token_count: int
     prompt_ids: list[int]
+    decode_start_time_ms: float | None = None
     finish_time_ms: float | None = None
     generated_ids: list[int] = field(default_factory=list)
     edge_generated_ids: list[int] = field(default_factory=list)
@@ -91,7 +92,12 @@ class Request:
     def latency_ms(self) -> float:
         if self.finish_time_ms is None:
             raise ValueError(f"request {self.request_id} has not finished")
-        return self.finish_time_ms - self.start_time_ms
+        start_time_ms = (
+            self.decode_start_time_ms
+            if self.decode_start_time_ms is not None
+            else self.start_time_ms
+        )
+        return self.finish_time_ms - start_time_ms
 
     @property
     def ttft_ms(self) -> float:

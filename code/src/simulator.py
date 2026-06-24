@@ -164,6 +164,9 @@ class Simulator:
     def _has_fixed_speculation_window(self) -> bool:
         return self.spec.window_size > 0
 
+    def _include_prefill(self) -> bool:
+        return bool(self.config["simulation"].get("include_prefill", False))
+
     def _uses_unconfirmed_token_budget(self) -> bool:
         return self.spec.runtime == "async"
 
@@ -330,7 +333,7 @@ class Simulator:
             tokens = segment.retained_tree_nodes or segment.tree_budget_nodes
         else:
             tokens = segment.gamma
-        if segment.base_pos == 0:
+        if self._include_prefill() and segment.base_pos == 0:
             tokens += self._prompt_token_count_for_segment(segment)
         return tokens
 
@@ -345,6 +348,8 @@ class Simulator:
         return duration_ms + self._target_prefill_latency_for_segments(segments)
 
     def _target_prefill_latency_for_segments(self, segments: Sequence[Segment]) -> float:
+        if not self._include_prefill():
+            return 0.0
         return sum(
             target_prefill_latency_ms(
                 self.config["edge"],
@@ -441,6 +446,9 @@ class Simulator:
                 prompt=item.prompt,
                 prompt_token_count=len(prompt_ids),
                 prompt_ids=prompt_ids,
+                decode_start_time_ms=(
+                    current_ms if not self._include_prefill() else None
+                ),
             )
             self.requests.append(request)
             self.device_runtimes[request.device_id].assigned_requests += 1
@@ -449,12 +457,20 @@ class Simulator:
     def _on_request_arrive(self, now_ms: float, request_id: int) -> None:
         request = self.requests[request_id]
         if self._is_server_only_runtime():
-            payload_bytes = self._payload_bytes(request.prompt_token_count)
-            delay_ms = self._network_delay_ms(
-                self.devices[request.device_id],
-                "uplink",
-                f"server-only:{request_id}",
-                payload_bytes,
+            payload_bytes = (
+                self._payload_bytes(request.prompt_token_count)
+                if self._include_prefill()
+                else 0
+            )
+            delay_ms = (
+                self._network_delay_ms(
+                    self.devices[request.device_id],
+                    "uplink",
+                    f"server-only:{request_id}",
+                    payload_bytes,
+                )
+                if self._include_prefill()
+                else 0.0
             )
             request.target_only_uplink_payload_bytes = payload_bytes
             request.target_only_uplink_ms = delay_ms
@@ -475,12 +491,20 @@ class Simulator:
         if self.spec.runtime != "target_only":
             self._refresh_drafting(request, now_ms)
             return
-        payload_bytes = self._payload_bytes(request.prompt_token_count)
-        delay_ms = self._network_delay_ms(
-            self.devices[request.device_id],
-            "uplink",
-            f"target-only:{request_id}",
-            payload_bytes,
+        payload_bytes = (
+            self._payload_bytes(request.prompt_token_count)
+            if self._include_prefill()
+            else 0
+        )
+        delay_ms = (
+            self._network_delay_ms(
+                self.devices[request.device_id],
+                "uplink",
+                f"target-only:{request_id}",
+                payload_bytes,
+            )
+            if self._include_prefill()
+            else 0.0
         )
         request.target_only_uplink_payload_bytes = payload_bytes
         request.target_only_uplink_ms = delay_ms
@@ -489,9 +513,13 @@ class Simulator:
     def _on_target_only_arrive_edge(self, now_ms: float, request_id: int) -> None:
         request = self.requests[request_id]
         generated_ids = self.model_runner.target_only(request.prompt_ids, request.output_len)
-        target_prefill_ms = target_prefill_latency_ms(
-            self.config["edge"],
-            request.prompt_token_count,
+        target_prefill_ms = (
+            target_prefill_latency_ms(
+                self.config["edge"],
+                request.prompt_token_count,
+            )
+            if self._include_prefill()
+            else 0.0
         )
         decode_ms = target_only_latency_ms(self.config["edge"], len(generated_ids))
         compute_ms = target_prefill_ms + decode_ms
@@ -613,7 +641,7 @@ class Simulator:
         target_verify_nodes = draft_build.target_verify_tree_nodes
         draft_prefill_ms = (
             self._server_only_draft_prefill_latency_ms(request.prompt_token_count)
-            if request.committed_pos == 0
+            if self._include_prefill() and request.committed_pos == 0
             else 0.0
         )
         draft_ms = draft_prefill_ms + self._server_only_draft_latency_ms(
@@ -935,7 +963,7 @@ class Simulator:
         base_pos = request.committed_pos + speculative_count
         draft_prefill_ms = (
             device_prefill_latency_ms(runtime.device, request.prompt_token_count)
-            if base_pos == 0
+            if self._include_prefill() and base_pos == 0
             else 0.0
         )
         fresh_processed_candidates = (

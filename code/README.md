@@ -18,6 +18,8 @@
 
 ## 核心口径
 
+- 默认实验范围是 steady-state autoregressive decoding；`simulation.include_prefill: false`
+  时，请求到达即视为 decode-ready，不统计 prompt prefill、prompt 传输或 TTFT。
 - 请求固定绑定到 origin client device，不在设备之间迁移。
 - 每台虚拟 client 固定部署一个 drafter，并以 segment 级 FIFO 串行服务本地请求。
 - 边缘服务器部署 target model，负责 target verification 和 target-only 生成。

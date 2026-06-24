@@ -49,6 +49,9 @@ def apply_tree_draft_strategy(config: dict[str, Any], strategy: str | None) -> d
 
 def validate_config(config: dict[str, Any]) -> None:
     simulation = config["simulation"]
+    simulation.setdefault("include_prefill", False)
+    if not isinstance(simulation["include_prefill"], bool):
+        raise ValueError("simulation.include_prefill must be a boolean")
     if int(simulation["num_requests"]) <= 0 or int(simulation["num_devices"]) <= 0:
         raise ValueError("num_requests and num_devices must be positive")
     edge = config["edge"]

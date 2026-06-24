@@ -21,6 +21,7 @@ class ConfigTest(unittest.TestCase):
             60,
         )
         self.assertEqual(config["edge"]["target_only_token_rate_tok_s"], 80)
+        self.assertFalse(config["simulation"]["include_prefill"])
 
     def test_homogeneous_uses_only_medium_devices(self) -> None:
         config = load_config("configs/default.yaml", "homogeneous")

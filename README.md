@@ -22,5 +22,6 @@ python3 -m unittest discover -s tests -v
 - [指标定义](code/docs/metric.md)
 - [论文材料目录](paper/README.md)
 
-当前实验口径参考 SpecEdge 首轮 `prefill` 流程：所有方法都计入初始 prompt 上传、
-端侧 drafter prefill 和服务器 target prefill。
+当前默认实验口径为 steady-state autoregressive decoding：`simulation.include_prefill`
+默认为 `false`，不统计 prompt prefill、prompt 传输或 TTFT；主指标为请求完成时延、
+TPOT/TBT、goodput 和相对基线加速比。
