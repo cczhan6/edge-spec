@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M6
+Current milestone: M7
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -10,8 +10,8 @@ Current milestone: M6
 | M3 Server-only-Linear | complete | `e007e74` | `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 18 passed; `pytest -q` -> 105 passed |
 | M4 SpecEdge-Linear | complete | `bdaa859` | `pytest -q tests/test_specedge_linear.py tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 25 passed; `pytest -q` -> 112 passed |
 | M5 DiP-SD fixed pipeline | complete | `a7191db` | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 20 passed; `pytest -q` -> 119 passed |
-| M6 DiP-SD optimizer | ready to commit | pending | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 22 passed; `pytest -q` -> 121 passed |
-| M7 Shared tree drafting and verification | pending | - | - |
+| M6 DiP-SD optimizer | complete | `8e34dd5` | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 22 passed; `pytest -q` -> 121 passed |
+| M7 Shared tree drafting and verification | ready to commit | pending | `pytest -q tests/test_server_only_tree.py tests/test_specedge_tree.py tests/test_linear_sd_core.py` -> 13 passed; `pytest -q` -> 127 passed |
 | M8 Server-only-Tree | pending | - | - |
 | M9 SpecEdge-Tree | pending | - | - |
 | M10 Regression and cleanup | pending | - | - |
@@ -349,3 +349,37 @@ None at M0.
 
 - Tie-breakers are deterministic: higher objective, lower span, fewer batches, lexicographically smaller batches, then lexicographically smaller draft lengths.
 - Scheduling estimates come from configured device acceptance profiles; target verification remains the sole authority for committed tokens.
+
+## M7 Shared Tree Drafting And Verification
+
+### Completion Conditions
+
+- Added tree-core tests in `tests/test_server_only_tree.py`.
+- Added SpecEdge tree-core tests in `tests/test_specedge_tree.py`.
+- Validated server-only tree strategy uses configured SpecExec-style budget.
+- Validated tree verification can accept a non-primary target path.
+- Validated tree rejection exposes the shared correction-token contract.
+- Validated SpecEdge initial and proactive tree limits are configured.
+- Validated proactive bonus tree starts from the bonus continuation.
+- Validated batched tree verification matches single tree verification.
+
+### Changed Files
+
+- Added `tests/test_server_only_tree.py`.
+- Added `tests/test_specedge_tree.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_server_only_tree.py tests/test_specedge_tree.py tests/test_linear_sd_core.py` -> 13 passed.
+- `pytest -q` -> 127 passed.
+
+### Contract Deviations Remaining
+
+- `server_only_tree` and `specedge_tree` method names are still absent; planned for M8-M9.
+- Server-only batch sizes greater than one remain a known gap.
+- Exact SpecEdge proactive reuse source-leaf check remains for M9.
+
+### Decisions
+
+- Official SpecEdge source attribution from M0 remains the basis for tree variants: `kaist-ina/specedge` commit `1edcaf02ffc41a7b57726450c5357ed216a3b9bc`.
