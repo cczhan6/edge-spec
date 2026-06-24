@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M8
+Current milestone: M9
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -12,8 +12,8 @@ Current milestone: M8
 | M5 DiP-SD fixed pipeline | complete | `a7191db` | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 20 passed; `pytest -q` -> 119 passed |
 | M6 DiP-SD optimizer | complete | `8e34dd5` | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 22 passed; `pytest -q` -> 121 passed |
 | M7 Shared tree drafting and verification | complete | `a99b92a` | `pytest -q tests/test_server_only_tree.py tests/test_specedge_tree.py tests/test_linear_sd_core.py` -> 13 passed; `pytest -q` -> 127 passed |
-| M8 Server-only-Tree | ready to commit | pending | `pytest -q tests/test_server_only_tree.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 131 passed |
-| M9 SpecEdge-Tree | pending | - | - |
+| M8 Server-only-Tree | complete | `2605beb` | `pytest -q tests/test_server_only_tree.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 131 passed |
+| M9 SpecEdge-Tree | ready to commit | pending | `pytest -q tests/test_specedge_tree.py tests/test_server_only_tree.py tests/test_target_only.py` -> 21 passed; `pytest -q` -> 136 passed |
 | M10 Regression and cleanup | pending | - | - |
 
 ## M0 Audit Existing Code vs Contract
@@ -417,3 +417,36 @@ None at M0.
 ### Decisions
 
 - `server_only_tree` uses the local SpecExec approximation class with official-style limits from `server_only` config and source attribution from M0.
+
+## M9 SpecEdge-Tree
+
+### Completion Conditions
+
+- Registered `specedge_tree`.
+- Forced SpecExec-style initial tree strategy for `specedge_tree`.
+- Forced SpecExec-style proactive tree strategy for `specedge_tree`.
+- Preserved SpecEdge edge/server deployment, network, server batching, and proactive drafting.
+- Confirmed proactive tree runs and is reused on exact alignment.
+- Confirmed proactive alignment failure discards state.
+- Confirmed `specedge_tree` output equals target-only greedy output.
+
+### Changed Files
+
+- Updated `src/methods.py`.
+- Updated `src/simulator.py`.
+- Updated `tests/test_specedge_tree.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_specedge_tree.py tests/test_server_only_tree.py tests/test_target_only.py` -> 21 passed.
+- `pytest -q` -> 136 passed.
+
+### Contract Deviations Remaining
+
+- Server-only batch sizes greater than one remain a known gap.
+- M10 still needs global verification script, docs cleanup, old-name cleanup, and final no-prefill static check.
+
+### Decisions
+
+- Tree proactive reuse requires the retained proactive tree prefix to match the accepted target-verified path before retaining state; bonus/root token equality is also required by the existing shared reuse path.

@@ -123,6 +123,20 @@ class Simulator:
                 max_beam_len=int(specedge_config["proactive_max_beam_len"]),
                 max_budget=int(specedge_config["proactive_max_budget"]),
             )
+        if self.spec.candidate_strategy == "tree" and self.spec.runtime == "specedge":
+            specedge_config = config["specedge"]
+            self._specedge_tree_strategy = SpecExecDraftTreeStrategy(
+                max_n_beams=int(specedge_config["max_n_beams"]),
+                max_beam_len=int(specedge_config["max_beam_len"]),
+                max_branch_width=int(specedge_config["max_branch_width"]),
+                max_budget=int(specedge_config["max_budget"]),
+            )
+            self._proactive_tree_strategy = SpecExecDraftTreeStrategy(
+                max_n_beams=int(specedge_config["max_n_beams"]),
+                max_beam_len=int(specedge_config["proactive_max_beam_len"]),
+                max_branch_width=int(specedge_config["max_branch_width"]),
+                max_budget=int(specedge_config["proactive_max_budget"]),
+            )
         if self.spec.candidate_strategy == "tree" and self._is_server_only_runtime():
             server_config = config["server_only"]
             self._server_only_tree_strategy = SpecExecDraftTreeStrategy(

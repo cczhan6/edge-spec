@@ -3,11 +3,23 @@ from __future__ import annotations
 import unittest
 
 from src.config import load_config
+from src.methods import get_method_spec
 from src.model_runner import FakeModelRunner
+from src.simulator import Simulator
 from src.tree_drafting import build_tree_draft_strategy
+from tests.common import accepting_model_runner, rejecting_model_runner, small_config
 
 
 class SpecEdgeTreeCoreTest(unittest.TestCase):
+    def test_specedge_tree_method_is_registered(self) -> None:
+        config = load_config("configs/default.yaml")
+
+        spec = get_method_spec("specedge_tree", config)
+
+        self.assertEqual(spec.runtime, "specedge")
+        self.assertEqual(spec.candidate_strategy, "tree")
+        self.assertTrue(spec.global_batch)
+
     def test_specedge_tree_and_proactive_limits_are_configured(self) -> None:
         config = load_config("configs/default.yaml")
 
@@ -51,6 +63,85 @@ class SpecEdgeTreeCoreTest(unittest.TestCase):
         )[0]
 
         self.assertEqual(batch, single)
+
+    def test_specedge_tree_forces_tree_strategy(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=8)
+        config["specedge"]["tree_draft_strategy"] = "linear"
+        config["specedge"]["proactive_tree_draft_strategy"] = "linear"
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_tree",
+        ).run()
+
+        verified = [segment for segment in result.segments if segment.accepted_count is not None]
+        self.assertTrue(verified)
+        self.assertTrue(all(segment.tree_strategy == "specexec_approx" for segment in verified))
+        self.assertTrue(all(segment.draft_tree is not None for segment in verified))
+
+    def test_specedge_tree_proactive_runs_and_reuses_on_alignment(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=12)
+        config["speculation"]["gamma_candidates"] = [1]
+        config["specedge"]["server_batch_size"] = 1
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_tree",
+        ).run()
+
+        self.assertTrue(any(event["event"] == "proactive_draft" for event in result.event_trace))
+        self.assertTrue(any(segment.proactive_hit for segment in result.segments))
+        for segment in result.segments:
+            if segment.proactive_hit and segment.proactive_draft_tree is not None:
+                accepted_prefix = segment.prefix_ids + segment.emitted_ids[: int(segment.accepted_count or 0)]
+                self.assertEqual(segment.proactive_draft_tree.prefix_ids, accepted_prefix)
+
+    def test_specedge_tree_alignment_failure_discards_proactive_state(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=8)
+        config["speculation"]["gamma_candidates"] = [1]
+        config["specedge"]["server_batch_size"] = 1
+
+        result = Simulator(
+            config,
+            rejecting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_tree",
+        ).run()
+
+        self.assertTrue(any(segment.proactive_wasted_tokens for segment in result.segments))
+        self.assertEqual(result.requests[0].proactive_draft_ids, [])
+
+    def test_specedge_tree_output_equals_target_only(self) -> None:
+        config, _, workload = small_config(num_requests=2, output_len=7)
+        config["specedge"]["server_batch_size"] = 2
+
+        for model_runner in (accepting_model_runner(), rejecting_model_runner()):
+            target = Simulator(
+                config,
+                model_runner,
+                workload,
+                "combined_strong_heterogeneous",
+                "target_only",
+            ).run()
+            specedge = Simulator(
+                config,
+                model_runner,
+                workload,
+                "combined_strong_heterogeneous",
+                "specedge_tree",
+            ).run()
+
+            self.assertEqual(
+                [request.generated_ids for request in specedge.requests],
+                [request.generated_ids for request in target.requests],
+            )
 
 
 if __name__ == "__main__":

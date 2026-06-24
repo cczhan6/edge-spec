@@ -9,6 +9,7 @@ SUPPORTED_METHODS = (
     "server_only_linear",
     "server_only_tree",
     "specedge_linear",
+    "specedge_tree",
     "dip_sd",
     "dip_sd_greedy",
     "sync_batch_sd",
@@ -88,6 +89,20 @@ def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
             global_batch=True,
             batch_timeout=True,
             candidate_strategy="linear",
+        )
+    if name == "specedge_tree":
+        return MethodSpec(
+            name,
+            "specedge",
+            "heterogeneous",
+            1,
+            0,
+            False,
+            "global_batch",
+            "fine_grained",
+            global_batch=True,
+            batch_timeout=True,
+            candidate_strategy="tree",
         )
     if name == "dip_sd_greedy":
         return MethodSpec(
