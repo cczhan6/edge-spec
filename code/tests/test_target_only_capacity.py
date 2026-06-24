@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import unittest
 
-from src.communication import network_delay_ms
 from src.latency import target_only_latency_ms
 from src.simulator import Simulator
 from tests.common import small_config
@@ -33,43 +32,13 @@ class TargetOnlyCapacityTest(unittest.TestCase):
             [event["lane_id"] for event in result.event_trace if event["event"] == "target_only_service"],
             [0, 0],
         )
-        self.assertEqual(requests[0].target_only_uplink_ms, 0.0)
         self.assertGreater(requests[0].target_only_downlink_ms, 0.0)
-        self.assertEqual(requests[0].target_only_uplink_payload_bytes, 0)
         self.assertEqual(requests[0].target_only_downlink_payload_bytes, 144)
-
-    def test_target_only_ttft_returns_after_first_decode(self) -> None:
-        config, model_runner, workload = small_config(num_requests=1, output_len=4)
-        config["edge"]["target_only_startup_ms"] = 7
-
-        result = Simulator(
-            config,
-            model_runner,
-            workload,
-            "combined_strong_heterogeneous",
-            "target_only",
-        ).run()
-        request = result.requests[0]
-        device = result.devices[request.device_id].device
-        first_token_payload_bytes = (
-            int(config["network"]["packet_header_bytes"])
-            + int(config["network"]["packet_token_bytes"])
+        service = next(
+            event for event in result.event_trace if event["event"] == "target_only_service"
         )
-        first_token_downlink_ms = network_delay_ms(
-            int(config["simulation"]["seed"]),
-            device,
-            "downlink",
-            "target-only-first-token:0",
-            first_token_payload_bytes,
-        )
-
-        expected_ttft_ms = (
-            request.target_only_queue_wait_ms
-            + target_only_latency_ms(config["edge"], 1)
-            + first_token_downlink_ms
-        )
-        self.assertAlmostEqual(request.ttft_ms, expected_ttft_ms)
-        self.assertLess(request.ttft_ms, request.latency_ms)
+        self.assertNotIn("uplink_ms", service)
+        self.assertNotIn("uplink_payload_bytes", service)
 
 
 if __name__ == "__main__":

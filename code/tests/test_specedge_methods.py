@@ -213,7 +213,7 @@ class SpecEdgeMethodTest(unittest.TestCase):
             first_proactive["finish_time_ms"],
         )
 
-    def test_server_only_has_request_network_and_matches_target_only(self) -> None:
+    def test_server_only_has_response_downlink_and_matches_target_only(self) -> None:
         config, model_runner, workload = small_config(num_requests=2, output_len=12)
         config["specedge"]["server_batch_size"] = 1
         spec = get_method_spec("server_only", config)
@@ -225,19 +225,16 @@ class SpecEdgeMethodTest(unittest.TestCase):
             [request.generated_ids for request in target.requests],
         )
         for server_request, target_request in zip(server_only.requests, target.requests):
-            self.assertEqual(server_request.target_only_uplink_ms, 0.0)
             self.assertGreater(server_request.target_only_downlink_ms, 0.0)
-            self.assertEqual(
-                server_request.target_only_uplink_payload_bytes,
-                target_request.target_only_uplink_payload_bytes,
-            )
             self.assertEqual(
                 server_request.target_only_downlink_payload_bytes,
                 target_request.target_only_downlink_payload_bytes,
             )
-            self.assertAlmostEqual(server_request.ttft_ms, server_request.latency_ms)
         self.assertTrue(all(segment.uplink_delay_ms == 0.0 for segment in server_only.segments))
         self.assertTrue(all(segment.downlink_delay_ms == 0.0 for segment in server_only.segments))
+        self.assertFalse(
+            any(event["event"] == "server_only_request_uplink" for event in server_only.event_trace)
+        )
         self.assertTrue(any(event["event"] == "server_only_draft" for event in server_only.event_trace))
         self.assertTrue(any(event["event"] == "server_only_verify" for event in server_only.event_trace))
         self.assertFalse(any(event["event"] == "global_batch_verify" for event in server_only.event_trace))

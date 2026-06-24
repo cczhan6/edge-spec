@@ -117,8 +117,8 @@ REQUEST_FIELDS = [
     "prompt_token_count",
     "method",
     "scenario",
-    "start_time_ms",
-    "decode_start_time_ms",
+    "arrival_time_ms",
+    "decode_ready_time_ms",
     "finish_time_ms",
     "latency_ms",
     "output_len",
@@ -130,8 +130,6 @@ REQUEST_FIELDS = [
     "bonus_reused_tokens",
     "max_outstanding_observed",
     "max_unconfirmed_tokens_observed",
-    "target_only_uplink_ms",
-    "target_only_uplink_payload_bytes",
     "target_only_queue_wait_ms",
     "target_only_compute_ms",
     "target_only_downlink_ms",
@@ -161,6 +159,7 @@ SEGMENT_FIELDS = [
     "draft_compute_ms",
     "draft_analytical_ms",
     "uplink_delay_ms",
+    "uplink_payload_tokens",
     "uplink_payload_bytes",
     "edge_arrival_time_ms",
     "verify_start_time_ms",
@@ -206,8 +205,6 @@ EVENT_FIELDS = [
     "start_time_ms",
     "finish_time_ms",
     "compute_ms",
-    "draft_prefill_ms",
-    "target_prefill_ms",
     "queue_wait_ms",
     "uplink_ms",
     "uplink_payload_bytes",
@@ -249,7 +246,7 @@ def summarize(result: SimulationResult, num_devices: int) -> tuple[dict[str, Any
         for request, token_count in zip(result.requests, output_tokens)
         if token_count
     ]
-    starts = [request.start_time_ms for request in result.requests]
+    starts = [request.decode_ready_time_ms for request in result.requests]
     finishes = [float(request.finish_time_ms) for request in result.requests]
     makespan_ms = max(finishes) - min(starts)
     goodput_tokens = sum(output_tokens)
@@ -293,8 +290,9 @@ def summarize(result: SimulationResult, num_devices: int) -> tuple[dict[str, Any
         if request.target_only_compute_ms
     ]
     uplink_delays = [
-        *[segment.uplink_delay_ms for segment in result.segments if segment.uplink_payload_bytes],
-        *[request.target_only_uplink_ms for request in result.requests if request.target_only_uplink_ms],
+        segment.uplink_delay_ms
+        for segment in result.segments
+        if segment.uplink_payload_bytes
     ]
     downlink_delays = [
         *[segment.downlink_delay_ms for segment in result.segments if segment.downlink_payload_bytes],
@@ -376,8 +374,9 @@ def summarize(result: SimulationResult, num_devices: int) -> tuple[dict[str, Any
         "uplink_ms_mean": _mean(uplink_delays),
         "downlink_ms_total": sum(downlink_delays),
         "downlink_ms_mean": _mean(downlink_delays),
-        "uplink_payload_bytes_total": sum(segment.uplink_payload_bytes for segment in result.segments)
-        + sum(request.target_only_uplink_payload_bytes for request in result.requests),
+        "uplink_payload_bytes_total": sum(
+            segment.uplink_payload_bytes for segment in result.segments
+        ),
         "downlink_payload_bytes_total": sum(segment.downlink_payload_bytes for segment in result.segments)
         + sum(request.target_only_downlink_payload_bytes for request in result.requests),
     }
@@ -407,7 +406,7 @@ def category_rows(result: SimulationResult, num_devices: int) -> list[dict[str, 
             for request, token_count in zip(requests, output_tokens)
             if token_count
         ]
-        starts = [request.start_time_ms for request in requests]
+        starts = [request.decode_ready_time_ms for request in requests]
         finishes = [float(request.finish_time_ms) for request in requests]
         makespan_ms = max(finishes) - min(starts)
         goodput_tokens = sum(output_tokens)
@@ -463,8 +462,8 @@ def request_rows(result: SimulationResult) -> list[dict[str, Any]]:
             "prompt_token_count": request.prompt_token_count,
             "method": result.method,
             "scenario": result.scenario,
-            "start_time_ms": request.start_time_ms,
-            "decode_start_time_ms": request.decode_start_time_ms,
+            "arrival_time_ms": request.arrival_time_ms,
+            "decode_ready_time_ms": request.decode_ready_time_ms,
             "finish_time_ms": request.finish_time_ms,
             "latency_ms": request.latency_ms,
             "output_len": request.output_len,
@@ -476,8 +475,6 @@ def request_rows(result: SimulationResult) -> list[dict[str, Any]]:
             "bonus_reused_tokens": request.bonus_reused_tokens,
             "max_outstanding_observed": request.max_outstanding_observed,
             "max_unconfirmed_tokens_observed": request.max_unconfirmed_tokens_observed,
-            "target_only_uplink_ms": request.target_only_uplink_ms,
-            "target_only_uplink_payload_bytes": request.target_only_uplink_payload_bytes,
             "target_only_queue_wait_ms": request.target_only_queue_wait_ms,
             "target_only_compute_ms": request.target_only_compute_ms,
             "target_only_downlink_ms": request.target_only_downlink_ms,
@@ -512,6 +509,7 @@ def segment_rows(result: SimulationResult) -> list[dict[str, Any]]:
             "draft_compute_ms": segment.draft_compute_ms,
             "draft_analytical_ms": segment.draft_analytical_ms,
             "uplink_delay_ms": segment.uplink_delay_ms,
+            "uplink_payload_tokens": segment.uplink_payload_tokens,
             "uplink_payload_bytes": segment.uplink_payload_bytes,
             "edge_arrival_time_ms": segment.edge_arrival_time_ms,
             "verify_start_time_ms": segment.verify_start_time_ms,
@@ -542,7 +540,7 @@ def segment_rows(result: SimulationResult) -> list[dict[str, Any]]:
 
 
 def device_rows(result: SimulationResult) -> list[dict[str, Any]]:
-    starts = [request.start_time_ms for request in result.requests]
+    starts = [request.decode_ready_time_ms for request in result.requests]
     finishes = [float(request.finish_time_ms) for request in result.requests]
     makespan_ms = max(finishes) - min(starts)
     return [

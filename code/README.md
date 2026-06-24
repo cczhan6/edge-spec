@@ -4,7 +4,7 @@
 
 除特别说明外，以下命令均在仓库根目录的 `code/` 目录中执行。
 
-真实模型 forward 的 wall time 不进入虚拟时间。因此，该仿真器可以在不部署大量真实端侧设备的情况下，评估异构端侧 drafter、边缘 target、异步验证和调度策略对端到端时延与吞吐的影响。
+真实模型 forward 的 wall time 不进入虚拟时间。因此，该仿真器可以在不部署大量真实端侧设备的情况下，评估异构端侧 drafter、边缘 target、异步验证和调度策略对 decode-only 时延与吞吐的影响。
 
 ## 文档导航
 
@@ -18,8 +18,9 @@
 
 ## 核心口径
 
-- 默认实验范围是 steady-state autoregressive decoding；`simulation.include_prefill: false`
-  时，请求到达即视为 decode-ready，不统计 prompt prefill、prompt 传输或 TTFT。
+- 实验范围是 steady-state autoregressive decoding；请求到达即视为 decode-ready，
+  端侧 drafter 和边缘 target 已分别建立该请求的 prefix KV cache。
+- Prompt prefill、初始 prompt 传输及 KV 建立过程不纳入仿真时间和资源调度。
 - 请求固定绑定到 origin client device，不在设备之间迁移。
 - 每台虚拟 client 固定部署一个 drafter，并以 segment 级 FIFO 串行服务本地请求。
 - 边缘服务器部署 target model，负责 target verification 和 target-only 生成。

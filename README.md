@@ -22,6 +22,7 @@ python3 -m unittest discover -s tests -v
 - [指标定义](code/docs/metric.md)
 - [论文材料目录](paper/README.md)
 
-当前默认实验口径为 steady-state autoregressive decoding：`simulation.include_prefill`
-默认为 `false`，不统计 prompt prefill、prompt 传输或 TTFT；主指标为请求完成时延、
+当前实验口径为 steady-state autoregressive decoding：请求进入系统时，端侧
+drafter 和边缘 target 已分别建立该请求的 prefix KV cache。Prompt prefill、初始
+prompt 传输及 KV 建立过程不纳入仿真时间和资源调度；主指标为请求完成时延、
 TPOT/TBT、goodput 和相对基线加速比。

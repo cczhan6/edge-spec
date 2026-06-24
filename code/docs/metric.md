@@ -54,7 +54,7 @@ SpecBench 原始类别会归并为 6 个顶层类别：`MT`、`QA`、`Math`、`R
 | 一致性状态 | `stale`、`discarded`、`absorbed` segment 数。 |
 | 浪费与复用 | rollback 次数、wasted draft tokens、bonus reused tokens。 |
 | SpecEdge 专有项 | proactive segment、proactive hit/waste、pipeline idle bubble 和 pipeline timing error。 |
-| 时延分解 | draft、verify、target-only、上行通信和下行通信的解析时延汇总；默认 decode-only 口径下 prefill 分项为 0。 |
+| 时延分解 | draft、verify、target-only、上行通信和下行通信的解析时延汇总。 |
 | 通信载荷 | 上下行 token-ID payload 字节数。 |
 
 解释系统指标时应结合主表。单独的高利用率不一定表示性能好；它也可能表示资源已经成为瓶颈。
@@ -63,7 +63,7 @@ SpecBench 原始类别会归并为 6 个顶层类别：`MT`、`QA`、`Math`、`R
 
 | 文件 | 主要用途 |
 |---|---|
-| `request_details_<scenario>_<method>.csv` | 排查单个请求的时延、decode start、origin device、类别、committed token、rollback、max outstanding、max unconfirmed draft tokens 和 target-only 分项。 |
+| `request_details_<scenario>_<method>.csv` | 排查单个请求的时延、arrival/decode-ready time、origin device、类别、committed token、rollback、max outstanding、max unconfirmed draft tokens 和 target-only 分项。 |
 | `segment_details_<scenario>_<method>.csv` | 排查 segment 级 scheduled/verify gamma、真实 acceptance、bonus reuse、payload、lane、draft 预算、SpecEdge pipeline 字段和最终状态。 |
 | `round_trace_<scenario>_<method>.csv` | 按调度轮次复现 segment 行为，适合定位动态 gamma、回滚和 stale segment。 |
 | `event_details_<scenario>_<method>.csv` | 查看 draft、verify、batch、target-only、server_only direct verify 和 request completion 事件。 |
@@ -71,8 +71,6 @@ SpecBench 原始类别会归并为 6 个顶层类别：`MT`、`QA`、`Math`、`R
 
 `SpecEdge` 的对比字段名为 `latency_ratio_vs_specedge` 和 `relative_latency_reduction_vs_specedge`。其 pipeline-aware scheduling 事件会写入 `event_details` 的 `pipeline_schedule`、`global_batch_verify.batch_type` 和 `pipeline_idle_bubble_ms` 字段。draft 预算相关字段包括 `tree_strategy`、`tree_budget_nodes`、`draft_compute_nodes`、`processed_candidate_count`、`retained_tree_nodes`、`target_verify_tree_nodes`、`proposed_count` 和 `tree_path_switched`；默认 `specexec_approx` 时，`processed_candidate_count` 表示 draft forward 处理的 candidate 数，`retained_tree_nodes` 表示 logprob/budget pruning 后保留的候选树节点数，`target_verify_tree_nodes` 表示 target verify latency 使用的计费节点数，`proposed_count` 表示 acceptance 统计使用的可验证路径深度；显式切到 `linear` 时树预算等于主路径 gamma，target verify 按单段固定 forward 计费。其中 `tree_path_switched` 表示 target greedy 命中了候选树中的非主路径分支。
 
-`event_details` 中保留 `draft_prefill_ms` 和 `target_prefill_ms` 兼容字段。默认
-`simulation.include_prefill: false` 时二者为 0；只有显式开启 `include_prefill` 时，
-它们才记录首个 draft segment 的 drafter prefill，以及首个 verify 或 target-only service
-的 target prefill。`server_only` 不产生 `global_batch_verify` 事件。默认 decode-only
-口径下，request 明细中的请求级上行字段为 0，server-only/target-only 的下行字段记录最终输出下载。
+`event_details` 不包含 prefill 分项。`server_only` 不产生 `global_batch_verify` 事件。
+request 明细中的 `arrival_time_ms` 与 `decode_ready_time_ms` 相等，表示请求进入仿真器时
+已经具备解码条件；server-only/target-only 的下行字段记录最终输出下载。

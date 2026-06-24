@@ -50,14 +50,14 @@ class Request:
     request_id: int
     device_id: int
     output_len: int
-    start_time_ms: float
+    arrival_time_ms: float
+    decode_ready_time_ms: float
     prompt_id: str
     category: str
     category_group: str
     prompt: str
     prompt_token_count: int
     prompt_ids: list[int]
-    decode_start_time_ms: float | None = None
     finish_time_ms: float | None = None
     generated_ids: list[int] = field(default_factory=list)
     edge_generated_ids: list[int] = field(default_factory=list)
@@ -74,11 +74,8 @@ class Request:
     wasted_draft_tokens: int = 0
     bonus_reused_tokens: int = 0
     overlap_credit_ms: float = 0.0
-    first_token_time_ms: float | None = None
     max_outstanding_observed: int = 0
     max_unconfirmed_tokens_observed: int = 0
-    target_only_uplink_ms: float = 0.0
-    target_only_uplink_payload_bytes: int = 0
     target_only_queue_wait_ms: float = 0.0
     target_only_compute_ms: float = 0.0
     target_only_downlink_ms: float = 0.0
@@ -92,18 +89,7 @@ class Request:
     def latency_ms(self) -> float:
         if self.finish_time_ms is None:
             raise ValueError(f"request {self.request_id} has not finished")
-        start_time_ms = (
-            self.decode_start_time_ms
-            if self.decode_start_time_ms is not None
-            else self.start_time_ms
-        )
-        return self.finish_time_ms - start_time_ms
-
-    @property
-    def ttft_ms(self) -> float:
-        if self.first_token_time_ms is None:
-            return 0.0
-        return self.first_token_time_ms - self.start_time_ms
+        return self.finish_time_ms - self.decode_ready_time_ms
 
     @property
     def committed_pos(self) -> int:
@@ -135,6 +121,7 @@ class Segment:
     draft_compute_ms: float = 0.0
     draft_analytical_ms: float = 0.0
     uplink_delay_ms: float = 0.0
+    uplink_payload_tokens: int = 0
     uplink_payload_bytes: int = 0
     edge_arrival_time_ms: float | None = None
     lane_id: int | None = None
@@ -183,6 +170,10 @@ class Segment:
     @property
     def verify_gamma(self) -> int:
         return len(self.draft_ids)
+
+    @property
+    def draft_payload_tokens(self) -> int:
+        return self.retained_tree_nodes or self.tree_budget_nodes or self.gamma
 
     @property
     def emitted_count(self) -> int:

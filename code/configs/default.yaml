@@ -2,7 +2,6 @@ simulation:
   seed: 42
   num_requests: 480
   num_devices: 8
-  include_prefill: false
   output_len_choices: [64, 128, 256]
   request_arrival: burst
   poisson_rate_per_s: 20
