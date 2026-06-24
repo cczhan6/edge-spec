@@ -51,12 +51,38 @@ class SemanticTreeVerifyInput:
     draft_tree: DraftCandidateTree
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class VerificationResult:
     accepted_count: int
-    emitted_ids: list[int]
-    rejected: bool
-    bonus_token: int | None = None
+    committed_tokens: list[int]
+    correction_token: int | None
+    bonus_token: int | None
+
+    def __init__(
+        self,
+        accepted_count: int,
+        emitted_ids: Sequence[int] | None = None,
+        rejected: bool | None = None,
+        bonus_token: int | None = None,
+        *,
+        committed_tokens: Sequence[int] | None = None,
+        correction_token: int | None = None,
+    ) -> None:
+        tokens = list(committed_tokens if committed_tokens is not None else emitted_ids or [])
+        if correction_token is None and rejected:
+            correction_token = tokens[-1] if tokens else None
+        object.__setattr__(self, "accepted_count", int(accepted_count))
+        object.__setattr__(self, "committed_tokens", tokens)
+        object.__setattr__(self, "correction_token", correction_token)
+        object.__setattr__(self, "bonus_token", bonus_token)
+
+    @property
+    def emitted_ids(self) -> list[int]:
+        return self.committed_tokens
+
+    @property
+    def rejected(self) -> bool:
+        return self.correction_token is not None
 
 
 class ModelRunner(Protocol):

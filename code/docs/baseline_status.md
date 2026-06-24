@@ -1,12 +1,12 @@
 # Baseline Reconstruction Status
 
-Current milestone: M1
+Current milestone: M2
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
 | M0 Audit existing code vs contract | complete | `d71648d` | `pytest -q` -> 87 passed |
-| M1 Target-only cleanup and correctness tests | ready to commit | pending | `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` -> 7 passed; `pytest -q` -> 93 passed |
-| M2 Shared linear SD semantics | pending | - | - |
+| M1 Target-only cleanup and correctness tests | complete | `84a873c` | `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` -> 7 passed; `pytest -q` -> 93 passed |
+| M2 Shared linear SD semantics | ready to commit | pending | `pytest -q tests/test_linear_sd_core.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 100 passed |
 | M3 Server-only-Linear | pending | - | - |
 | M4 SpecEdge-Linear | pending | - | - |
 | M5 DiP-SD fixed pipeline | pending | - | - |
@@ -155,3 +155,39 @@ None at M0.
 ### Decisions
 
 - Target-only request fields `target_only_downlink_ms` and `target_only_downlink_payload_bytes` remain in the data model for CSV compatibility, but target-only now leaves them at zero.
+
+## M2 Shared Linear SD Semantics
+
+### Completion Conditions
+
+- Added shared linear speculative decoding core tests.
+- Exposed `VerificationResult` contract fields: `accepted_count`, `committed_tokens`, `correction_token`, and `bonus_token`.
+- Preserved legacy compatibility through `emitted_ids` and `rejected` properties.
+- Confirmed all-accept linear verification returns a bonus token.
+- Confirmed first-mismatch verification returns a correction token and no bonus token.
+- Confirmed batched linear verification matches individual verification.
+- Confirmed linear speculative output equals target-only greedy output.
+- Confirmed rejected draft tokens are not committed.
+- Confirmed max-output truncation does not commit an extra bonus token.
+
+### Changed Files
+
+- Added `tests/test_linear_sd_core.py`.
+- Updated `src/model_runner.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_linear_sd_core.py tests/test_target_only.py` before implementation -> 3 failed, 10 passed; failures were missing `committed_tokens` and `correction_token` fields.
+- `pytest -q tests/test_linear_sd_core.py tests/test_target_only.py` after implementation -> 13 passed.
+- `pytest -q` after implementation -> 100 passed.
+
+### Contract Deviations Remaining
+
+- Canonical method names for server-only, SpecEdge, and DiP-SD are still absent; planned for M3-M9.
+- Legacy `server_only` still models final response downlink; planned for M3.
+- DiP-SD remains unimplemented; planned for M5-M6.
+
+### Decisions
+
+- `VerificationResult` is now contract-first while retaining read-only compatibility properties for existing simulator and tests.
