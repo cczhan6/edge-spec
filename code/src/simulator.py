@@ -37,7 +37,7 @@ from src.model_runner import (
     concat_linear_prefix_tree,
     rebase_draft_tree,
 )
-from src.tree_drafting import DraftTreePlan, build_tree_draft_strategy
+from src.tree_drafting import DraftTreePlan, LinearDraftTreeStrategy, build_tree_draft_strategy
 from src.workload import WorkloadItem
 
 
@@ -107,6 +107,16 @@ class Simulator:
             "specedge",
             proactive=True,
         )
+        if self.spec.candidate_strategy == "linear" and self.spec.runtime == "specedge":
+            specedge_config = config["specedge"]
+            self._specedge_tree_strategy = LinearDraftTreeStrategy(
+                max_beam_len=int(specedge_config["max_beam_len"]),
+                max_budget=int(specedge_config["max_budget"]),
+            )
+            self._proactive_tree_strategy = LinearDraftTreeStrategy(
+                max_beam_len=int(specedge_config["proactive_max_beam_len"]),
+                max_budget=int(specedge_config["proactive_max_budget"]),
+            )
         self._last_specedge_verify_ms = self._initial_specedge_verify_ms()
         self._pipeline_idle_bubble_ms = 0.0
 

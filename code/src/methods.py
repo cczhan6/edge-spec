@@ -7,6 +7,7 @@ from typing import Any
 SUPPORTED_METHODS = (
     "target_only",
     "server_only_linear",
+    "specedge_linear",
     "sync_batch_sd",
     "SpecEdge",
     "server_only",
@@ -57,6 +58,20 @@ def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
             False,
             "none",
             "fine_grained",
+            candidate_strategy="linear",
+        )
+    if name == "specedge_linear":
+        return MethodSpec(
+            name,
+            "specedge",
+            "heterogeneous",
+            1,
+            0,
+            False,
+            "global_batch",
+            "fine_grained",
+            global_batch=True,
+            batch_timeout=True,
             candidate_strategy="linear",
         )
     if name == "sync_batch_sd":

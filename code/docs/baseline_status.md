@@ -1,14 +1,14 @@
 # Baseline Reconstruction Status
 
-Current milestone: M3
+Current milestone: M4
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
 | M0 Audit existing code vs contract | complete | `d71648d` | `pytest -q` -> 87 passed |
 | M1 Target-only cleanup and correctness tests | complete | `84a873c` | `pytest -q tests/test_target_only.py tests/test_target_only_capacity.py` -> 7 passed; `pytest -q` -> 93 passed |
 | M2 Shared linear SD semantics | complete | `1c4a9b6` | `pytest -q tests/test_linear_sd_core.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 100 passed |
-| M3 Server-only-Linear | ready to commit | pending | `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 18 passed; `pytest -q` -> 105 passed |
-| M4 SpecEdge-Linear | pending | - | - |
+| M3 Server-only-Linear | complete | `e007e74` | `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 18 passed; `pytest -q` -> 105 passed |
+| M4 SpecEdge-Linear | ready to commit | pending | `pytest -q tests/test_specedge_linear.py tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 25 passed; `pytest -q` -> 112 passed |
 | M5 DiP-SD fixed pipeline | pending | - | - |
 | M6 DiP-SD optimizer | pending | - | - |
 | M7 Shared tree drafting and verification | pending | - | - |
@@ -233,3 +233,39 @@ None at M0.
 ### Decisions
 
 - The legacy `server_only` runtime now follows the decode-only no-network boundary as well. This keeps old tests compatible with the contract while the canonical `server_only_linear` and later `server_only_tree` names are introduced.
+
+## M4 SpecEdge-Linear
+
+### Completion Conditions
+
+- Registered `specedge_linear`.
+- Forced linear initial candidate drafting for `specedge_linear`.
+- Forced linear proactive drafting for `specedge_linear`.
+- Preserved edge-origin drafting, upload/download communication, server batching, and proactive scheduling.
+- Confirmed dynamic batching takes currently ready requests.
+- Confirmed static batching waits for full batch in the tested no-timeout case.
+- Confirmed proactive drafting runs while waiting and final output is still target-only greedy.
+- Confirmed alignment failure discards proactive state.
+
+### Changed Files
+
+- Added `tests/test_specedge_linear.py`.
+- Updated `src/methods.py`.
+- Updated `src/simulator.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_specedge_linear.py tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` before implementation -> 7 failed, 18 passed; failures were unsupported `specedge_linear`.
+- `pytest -q tests/test_specedge_linear.py tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` after implementation -> 25 passed.
+- `pytest -q` after implementation -> 112 passed.
+
+### Contract Deviations Remaining
+
+- `dip_sd`, `server_only_tree`, and `specedge_tree` are still absent.
+- Server-only batch sizes greater than one remain a known gap.
+- Exact SpecEdge tree proactive reuse source-leaf check remains for M9.
+
+### Decisions
+
+- `specedge_linear` keeps SpecEdge deployment, network, server batching, and proactive state machine, but replaces both initial and proactive tree strategies with linear strategies at simulator initialization.
