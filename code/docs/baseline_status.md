@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M7
+Current milestone: M8
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -11,8 +11,8 @@ Current milestone: M7
 | M4 SpecEdge-Linear | complete | `bdaa859` | `pytest -q tests/test_specedge_linear.py tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 25 passed; `pytest -q` -> 112 passed |
 | M5 DiP-SD fixed pipeline | complete | `a7191db` | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 20 passed; `pytest -q` -> 119 passed |
 | M6 DiP-SD optimizer | complete | `8e34dd5` | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 22 passed; `pytest -q` -> 121 passed |
-| M7 Shared tree drafting and verification | ready to commit | pending | `pytest -q tests/test_server_only_tree.py tests/test_specedge_tree.py tests/test_linear_sd_core.py` -> 13 passed; `pytest -q` -> 127 passed |
-| M8 Server-only-Tree | pending | - | - |
+| M7 Shared tree drafting and verification | complete | `a99b92a` | `pytest -q tests/test_server_only_tree.py tests/test_specedge_tree.py tests/test_linear_sd_core.py` -> 13 passed; `pytest -q` -> 127 passed |
+| M8 Server-only-Tree | ready to commit | pending | `pytest -q tests/test_server_only_tree.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 131 passed |
 | M9 SpecEdge-Tree | pending | - | - |
 | M10 Regression and cleanup | pending | - | - |
 
@@ -383,3 +383,37 @@ None at M0.
 ### Decisions
 
 - Official SpecEdge source attribution from M0 remains the basis for tree variants: `kaist-ina/specedge` commit `1edcaf02ffc41a7b57726450c5357ed216a3b9bc`.
+
+## M8 Server-Only-Tree
+
+### Completion Conditions
+
+- Registered `server_only_tree`.
+- Forced SpecExec-style tree strategy for `server_only_tree` even when legacy config is set to linear.
+- Preserved server-only no-network semantics.
+- Preserved no proactive drafting for server-only tree.
+- Added server draft and target resource assertions.
+- Confirmed server-only tree output equals target-only greedy output.
+
+### Changed Files
+
+- Updated `src/methods.py`.
+- Updated `src/simulator.py`.
+- Updated `tests/test_server_only_tree.py`.
+- Updated `tests/test_decode_only_initialization.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_server_only_tree.py tests/test_target_only.py` -> 13 passed.
+- `pytest -q` -> 131 passed.
+
+### Contract Deviations Remaining
+
+- Server-only batch sizes greater than one remain a known gap.
+- `specedge_tree` is still absent.
+- Exact SpecEdge proactive reuse source-leaf check remains for M9.
+
+### Decisions
+
+- `server_only_tree` uses the local SpecExec approximation class with official-style limits from `server_only` config and source attribution from M0.

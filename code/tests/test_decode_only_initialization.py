@@ -35,7 +35,7 @@ class DecodeOnlyInitializationTest(unittest.TestCase):
 
     def test_first_segment_upload_excludes_prompt(self) -> None:
         for method in SUPPORTED_METHODS:
-            if method in {"target_only", "server_only", "server_only_linear"}:
+            if method in {"target_only", "server_only", "server_only_linear", "server_only_tree"}:
                 continue
             with self.subTest(method=method):
                 config, model_runner, workload = small_config(

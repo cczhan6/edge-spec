@@ -7,6 +7,7 @@ from typing import Any
 SUPPORTED_METHODS = (
     "target_only",
     "server_only_linear",
+    "server_only_tree",
     "specedge_linear",
     "dip_sd",
     "dip_sd_greedy",
@@ -61,6 +62,18 @@ def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
             "none",
             "fine_grained",
             candidate_strategy="linear",
+        )
+    if name == "server_only_tree":
+        return MethodSpec(
+            name,
+            "server_only_specedge",
+            "heterogeneous",
+            1,
+            0,
+            False,
+            "none",
+            "fine_grained",
+            candidate_strategy="tree",
         )
     if name == "specedge_linear":
         return MethodSpec(
