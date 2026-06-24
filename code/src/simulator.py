@@ -8,7 +8,7 @@ from typing import Any, Callable, Sequence
 
 from src.communication import network_delay_ms
 from src.config import build_devices
-from src.dip_sd import build_fixed_epoch_plan
+from src.dip_sd import build_fixed_epoch_plan, optimize_epoch_plan
 from src.entities import (
     ACTIVE_SEGMENT_STATUSES,
     FINAL_SEGMENT_STATUSES,
@@ -205,14 +205,27 @@ class Simulator:
                 server_available_ms = now_ms
                 continue
 
-            plan = build_fixed_epoch_plan(
-                active,
-                batch_count=int(dip_config["batch_count"]),
-                draft_length=int(dip_config["draft_length"]),
-                min_draft_length=int(dip_config["min_draft_length"]),
-                max_draft_length=int(dip_config["max_draft_length"]),
-                max_batch_size=int(dip_config["max_batch_size"]),
-            )
+            if self.spec.name == "dip_sd":
+                plan = optimize_epoch_plan(
+                    active,
+                    acceptance_estimates={
+                        request_id: self.devices[self.requests[request_id].device_id].acceptance_prior
+                        for request_id in active
+                    },
+                    max_batch_count=int(dip_config["batch_count"]),
+                    min_draft_length=int(dip_config["min_draft_length"]),
+                    max_draft_length=int(dip_config["max_draft_length"]),
+                    max_batch_size=int(dip_config["max_batch_size"]),
+                )
+            else:
+                plan = build_fixed_epoch_plan(
+                    active,
+                    batch_count=int(dip_config["batch_count"]),
+                    draft_length=int(dip_config["draft_length"]),
+                    min_draft_length=int(dip_config["min_draft_length"]),
+                    max_draft_length=int(dip_config["max_draft_length"]),
+                    max_batch_size=int(dip_config["max_batch_size"]),
+                )
             self._trace.append(
                 {
                     "event": "dip_sd_epoch_plan",
@@ -221,6 +234,10 @@ class Simulator:
                     "time_ms": now_ms,
                     "batches": [list(batch) for batch in plan.batches],
                     "draft_lengths": dict(plan.draft_lengths),
+                    "optimizer": plan.optimizer,
+                    "objective": plan.objective,
+                    "expected_useful_tokens": plan.expected_useful_tokens,
+                    "pipeline_span": plan.pipeline_span,
                 }
             )
             epoch_result_arrivals: list[float] = []

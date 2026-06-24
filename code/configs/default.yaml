@@ -126,7 +126,7 @@ specedge:
 
 dip_sd:
   adaptation: online_epoch_barrier
-  optimizer: fixed_greedy
+  optimizer: deterministic_search
   batch_count: 2
   draft_length: 2
   max_active_requests: 8

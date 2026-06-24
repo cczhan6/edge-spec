@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M5
+Current milestone: M6
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -9,8 +9,8 @@ Current milestone: M5
 | M2 Shared linear SD semantics | complete | `1c4a9b6` | `pytest -q tests/test_linear_sd_core.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 100 passed |
 | M3 Server-only-Linear | complete | `e007e74` | `pytest -q tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 18 passed; `pytest -q` -> 105 passed |
 | M4 SpecEdge-Linear | complete | `bdaa859` | `pytest -q tests/test_specedge_linear.py tests/test_server_only_linear.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 25 passed; `pytest -q` -> 112 passed |
-| M5 DiP-SD fixed pipeline | ready to commit | pending | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 20 passed; `pytest -q` -> 119 passed |
-| M6 DiP-SD optimizer | pending | - | - |
+| M5 DiP-SD fixed pipeline | complete | `a7191db` | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 20 passed; `pytest -q` -> 119 passed |
+| M6 DiP-SD optimizer | ready to commit | pending | `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 22 passed; `pytest -q` -> 121 passed |
 | M7 Shared tree drafting and verification | pending | - | - |
 | M8 Server-only-Tree | pending | - | - |
 | M9 SpecEdge-Tree | pending | - | - |
@@ -311,3 +311,41 @@ None at M0.
 
 - New arrivals are admitted only at epoch barriers by setting request ready time to the barrier time when admitted.
 - M5 uses configured profile acceptance only for future optimizer plumbing; semantic verification still determines actual committed tokens.
+
+## M6 DiP-SD Optimizer
+
+### Completion Conditions
+
+- Registered canonical `dip_sd`.
+- Kept `dip_sd_greedy` available for the fixed pipeline.
+- Added deterministic bounded optimizer over feasible batch counts and integer draft lengths.
+- Added deterministic assignment for fixed draft lengths.
+- Used configured device/profile acceptance estimates for scheduling.
+- Confirmed optimizer determinism.
+- Confirmed optimizer choices respond to estimated acceptance and do not inspect realized future acceptance.
+- Confirmed `dip_sd` output equals target-only greedy output.
+
+### Changed Files
+
+- Updated `src/dip_sd.py`.
+- Updated `src/methods.py`.
+- Updated `src/simulator.py`.
+- Updated `configs/default.yaml`.
+- Updated `tests/test_dip_sd.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_dip_sd.py tests/test_linear_sd_core.py tests/test_target_only.py` -> 22 passed.
+- `pytest -q` -> 121 passed.
+
+### Contract Deviations Remaining
+
+- The optimizer uses deterministic bounded enumeration for draft lengths and deterministic assignment updates rather than an external MILP solver. This is treated as an exact bounded implementation for configured small active cohorts; larger equal-resource experiments should revisit solver scalability.
+- Server-only batch sizes greater than one remain a known gap.
+- Tree baselines remain absent.
+
+### Decisions
+
+- Tie-breakers are deterministic: higher objective, lower span, fewer batches, lexicographically smaller batches, then lexicographically smaller draft lengths.
+- Scheduling estimates come from configured device acceptance profiles; target verification remains the sole authority for committed tokens.

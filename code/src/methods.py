@@ -8,6 +8,7 @@ SUPPORTED_METHODS = (
     "target_only",
     "server_only_linear",
     "specedge_linear",
+    "dip_sd",
     "dip_sd_greedy",
     "sync_batch_sd",
     "SpecEdge",
@@ -76,6 +77,18 @@ def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
             candidate_strategy="linear",
         )
     if name == "dip_sd_greedy":
+        return MethodSpec(
+            name,
+            "dip_sd",
+            "heterogeneous",
+            1,
+            0,
+            False,
+            "ordered_batches",
+            "fine_grained",
+            candidate_strategy="linear",
+        )
+    if name == "dip_sd":
         return MethodSpec(
             name,
             "dip_sd",
