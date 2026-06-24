@@ -34,11 +34,22 @@ MAIN_FIELDS = [
     "avg_acceptance_rate",
     "avg_selected_gamma",
     "latency_speedup_vs_autoregressive",
+    "latency_ratio_vs_dip_sd",
+    "latency_ratio_vs_specedge_linear",
+    "latency_ratio_vs_specedge_tree",
+    "latency_ratio_vs_server_only_linear",
+    "latency_ratio_vs_server_only_tree",
     "latency_ratio_vs_sync_batch_sd",
     "latency_ratio_vs_specedge",
+    "relative_latency_reduction_vs_dip_sd",
+    "relative_latency_reduction_vs_specedge_linear",
+    "relative_latency_reduction_vs_specedge_tree",
+    "relative_latency_reduction_vs_server_only_linear",
+    "relative_latency_reduction_vs_server_only_tree",
     "relative_latency_reduction_vs_sync_batch_sd",
     "relative_latency_reduction_vs_specedge",
     "goodput_gain_vs_autoregressive",
+    "goodput_gain_vs_dip_sd",
     "goodput_gain_vs_sync_batch_sd",
 ]
 
@@ -325,7 +336,7 @@ def summarize(result: SimulationResult, num_devices: int) -> tuple[dict[str, Any
         target_capacity = max(1, len(result.lanes))
         target_utilization = sum(target_compute) / (target_capacity * makespan_ms) if makespan_ms else 0.0
         resource_busy_ms = sum(target_compute)
-    elif result.method == "server_only":
+    elif result.method in {"server_only", "server_only_linear", "server_only_tree"}:
         target_capacity = 1
         resource_busy_ms = sum(verify_events) + sum(server_only_draft_events)
         target_utilization = resource_busy_ms / makespan_ms if makespan_ms else 0.0
@@ -438,17 +449,43 @@ def category_rows(result: SimulationResult, num_devices: int) -> list[dict[str, 
 def enrich_comparisons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_method = {row["method"]: row for row in rows}
     autoregressive = by_method.get("target_only")
-    sync_batch = by_method.get("sync_batch_sd")
-    specedge = by_method.get("SpecEdge")
+    dip_sd = _first_available(by_method, "dip_sd", "dip_sd_greedy", "sync_batch_sd")
+    specedge_linear = _first_available(by_method, "specedge_linear", "SpecEdge")
+    specedge_tree = _first_available(by_method, "specedge_tree", "SpecEdge")
+    server_only_linear = _first_available(by_method, "server_only_linear", "server_only")
+    server_only_tree = _first_available(by_method, "server_only_tree", "server_only")
+    sync_batch = by_method.get("sync_batch_sd") or dip_sd
+    specedge = by_method.get("SpecEdge") or specedge_linear or specedge_tree
     for row in rows:
         row["latency_speedup_vs_autoregressive"] = _latency_ratio(autoregressive, row)
+        row["latency_ratio_vs_dip_sd"] = _latency_ratio(dip_sd, row)
+        row["latency_ratio_vs_specedge_linear"] = _latency_ratio(specedge_linear, row)
+        row["latency_ratio_vs_specedge_tree"] = _latency_ratio(specedge_tree, row)
+        row["latency_ratio_vs_server_only_linear"] = _latency_ratio(server_only_linear, row)
+        row["latency_ratio_vs_server_only_tree"] = _latency_ratio(server_only_tree, row)
         row["latency_ratio_vs_sync_batch_sd"] = _latency_ratio(sync_batch, row)
         row["latency_ratio_vs_specedge"] = _latency_ratio(specedge, row)
+        row["relative_latency_reduction_vs_dip_sd"] = _latency_reduction(dip_sd, row)
+        row["relative_latency_reduction_vs_specedge_linear"] = _latency_reduction(specedge_linear, row)
+        row["relative_latency_reduction_vs_specedge_tree"] = _latency_reduction(specedge_tree, row)
+        row["relative_latency_reduction_vs_server_only_linear"] = _latency_reduction(server_only_linear, row)
+        row["relative_latency_reduction_vs_server_only_tree"] = _latency_reduction(server_only_tree, row)
         row["relative_latency_reduction_vs_sync_batch_sd"] = _latency_reduction(sync_batch, row)
         row["relative_latency_reduction_vs_specedge"] = _latency_reduction(specedge, row)
         row["goodput_gain_vs_autoregressive"] = _goodput_gain(row, autoregressive)
+        row["goodput_gain_vs_dip_sd"] = _goodput_gain(row, dip_sd)
         row["goodput_gain_vs_sync_batch_sd"] = _goodput_gain(row, sync_batch)
     return rows
+
+
+def _first_available(
+    rows_by_method: dict[str, dict[str, Any]], *method_names: str
+) -> dict[str, Any] | None:
+    for method_name in method_names:
+        row = rows_by_method.get(method_name)
+        if row is not None:
+            return row
+    return None
 
 
 def request_rows(result: SimulationResult) -> list[dict[str, Any]]:

@@ -16,7 +16,7 @@ SUMMARY_OUT="${SUMMARY_OUT:-}"
 SCENARIO="${SCENARIO:-combined_strong_heterogeneous}"
 SCENARIOS="${SCENARIOS:-homogeneous combined_strong_heterogeneous}"
 METHOD="${METHOD:-full}"
-METHODS="${METHODS:-full target_only sync_batch_sd SpecEdge server_only}"
+METHODS="${METHODS:-full target_only server_only_linear specedge_linear dip_sd server_only_tree specedge_tree}"
 W_VALUES="${W_VALUES:-1 2 3 4}"
 LANE_VALUES="${LANE_VALUES:-1 2 4 8}"
 USE_FAKE_MODEL_RUNNER="${USE_FAKE_MODEL_RUNNER:-${USE_FAKE_ORACLE:-0}}"
@@ -53,7 +53,7 @@ Environment overrides:
   SCENARIO=combined_strong_heterogeneous
   SCENARIOS="homogeneous combined_strong_heterogeneous"
   METHOD=full
-  METHODS="full target_only sync_batch_sd SpecEdge server_only"
+  METHODS="full target_only server_only_linear specedge_linear dip_sd server_only_tree specedge_tree"
   W_VALUES="1 2 3 4"
   LANE_VALUES="1 2 4 8"
   USE_FAKE_MODEL_RUNNER=1
@@ -69,7 +69,7 @@ Examples:
   SCENARIOS=combined_strong_heterogeneous SAMPLES_PER_CATEGORY=10 bash scripts/run.sh all
   SCENARIOS=combined_strong_heterogeneous SUMMARY_ONLY=1 bash scripts/run.sh all
   USE_FAKE_MODEL_RUNNER=1 LANE_VALUES="1 2" bash scripts/run.sh sensitivity-lanes
-  TREE_DRAFT_STRATEGY=specexec_approx METHOD=SpecEdge bash scripts/run.sh single
+  METHOD=specedge_tree bash scripts/run.sh single
 EOF
 }
 

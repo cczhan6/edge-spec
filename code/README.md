@@ -33,13 +33,19 @@
 | 方法 | 用途 | 简要说明 |
 |---|---|---|
 | `full` | 主方法 | 异构端侧 drafter、动态 gamma、多 verifier lane、持续乐观起草和精细回滚。 |
-| `target_only` | 自回归基线 | 请求上传边缘，由单个 target 服务资源完整生成。 |
-| `sync_batch_sd` | 同步 SD 基线 | 异构 drafter 和动态 gamma，但使用全局同步 batch verify。 |
-| `SpecEdge` | SpecExec-style 树形近似基线 | 树形 draft、server batch validation、proactive continuation 和 pipeline-aware scheduling；可显式切到线性近似。 |
-| `server_only` | SpecEdge-style server-only 近似 | 服务器侧树形 draft/verify 共址，不做 segment 级端边往返；可显式切到线性近似。 |
+| `target_only` | 自回归基线 | decode-ready 请求由单个边缘 target 服务资源完整生成；decode-only 口径下无通信。 |
+| `server_only_linear` | Server-only SD-Linear | 服务器侧线性 draft + target verify，draft/target 使用独立逻辑资源，无端边通信。 |
+| `specedge_linear` | SpecEdge-Linear | 端侧线性 draft、端边往返、server batch validation、proactive continuation。 |
+| `dip_sd` | DiP-SD | 固定流水线加确定性在线优化器，按 epoch 有序 batch verify。 |
+| `server_only_tree` | Server-only SD-Tree | 服务器侧 SpecExec-style 树形 draft + target verify，无 proactive、无端边通信。 |
+| `specedge_tree` | SpecEdge-Tree | 端侧 SpecExec-style 树形 draft、server batch validation、proactive continuation。 |
 | `wo_async` | 组件消融 | 去掉持续乐观起草。 |
 | `wo_scheduling` | 组件消融 | 去掉 heterogeneity-aware lane scheduling。 |
 | `conservative_rollback` | 组件消融 | 去掉精细 bonus 重定位和局部保留。 |
+
+Legacy aliases `sync_batch_sd`, `SpecEdge`, and `server_only` remain accepted for
+old experiments and tests, but the baseline rebuild validates the canonical names
+listed above.
 
 ## 场景
 
@@ -94,21 +100,21 @@ bash scripts/run.sh sensitivity-lanes
 | `RUN_ROOT` | `outputs/runs` |
 | `RUN_ID` | 当前开始时间，格式 `YYYYMMDD-HHMMSS` |
 | `SCENARIOS` | `homogeneous combined_strong_heterogeneous` |
-| `METHODS` | `full target_only sync_batch_sd SpecEdge server_only` |
+| `METHODS` | `full target_only server_only_linear specedge_linear dip_sd server_only_tree specedge_tree` |
 | `USE_FAKE_MODEL_RUNNER` | `0` |
 | `SAMPLES_PER_CATEGORY` | 空，默认使用 `simulation.num_requests` 全局抽样 |
 | `TREE_DRAFT_STRATEGY` | 空，默认使用配置文件中的 `specexec_approx`；可设 `linear` 或 `specexec_approx` |
 
-`SpecEdge` 和 `server_only` 默认采用 `specexec_approx` 树形口径。该模式会记录 `processed_candidate_count`、`retained_tree_nodes` 和 `target_verify_tree_nodes` 三类节点数。若要延续旧的固定段级线性近似，可显式设置 `tree_draft_strategy: linear` 或使用 `TREE_DRAFT_STRATEGY=linear`。
+`specedge_tree` 和 `server_only_tree` 采用 `specexec_approx` 树形口径。该模式会记录 `processed_candidate_count`、`retained_tree_nodes` 和 `target_verify_tree_nodes` 三类节点数。`specedge_linear` 和 `server_only_linear` 强制使用线性候选，不依赖树形配置。
 
 也可以直接用命令覆盖：
 
 ```bash
-# 使用默认树形 baseline
-TREE_DRAFT_STRATEGY=specexec_approx METHOD=SpecEdge bash scripts/run.sh single
+# 使用 SpecEdge 树形 baseline
+METHOD=specedge_tree bash scripts/run.sh single
 
-# 关闭树形，回到线性近似
-TREE_DRAFT_STRATEGY=linear METHOD=SpecEdge bash scripts/run.sh single
+# 使用 SpecEdge 线性 baseline
+METHOD=specedge_linear bash scripts/run.sh single
 ```
 
 初步验证可按 SpecBench 6 类均衡抽样，例如每类 10 条、总共 60 条：
@@ -147,5 +153,7 @@ bash scripts/run.sh all
 ## 测试
 
 ```bash
-python3 -m unittest discover -s tests -v
+pytest -q
+
+bash scripts/verify_baseline_rebuild.sh
 ```

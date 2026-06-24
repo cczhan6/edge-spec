@@ -2049,33 +2049,6 @@ class Simulator:
         else:
             self._refresh_drafting(request, now_ms)
 
-    def _schedule_server_only_response_downlink(self, request: Request, now_ms: float) -> None:
-        payload_bytes = self._payload_bytes(len(request.generated_ids))
-        delay_ms = self._network_delay_ms(
-            self.devices[request.device_id],
-            "downlink",
-            f"server-only:{request.request_id}",
-            payload_bytes,
-        )
-        request.target_only_downlink_payload_bytes = payload_bytes
-        request.target_only_downlink_ms = delay_ms
-        self._trace.append(
-            {
-                "event": "server_only_response_downlink",
-                "method": self.spec.name,
-                "request_id": request.request_id,
-                "device_id": request.device_id,
-                "start_time_ms": now_ms,
-                "finish_time_ms": now_ms + delay_ms,
-                "downlink_ms": delay_ms,
-                "downlink_payload_bytes": payload_bytes,
-            }
-        )
-        if self._server_only_active_request_id == request.request_id:
-            self._server_only_active_request_id = None
-            self._maybe_start_server_only_request(now_ms)
-        self._schedule(now_ms + delay_ms, EventType.REQUEST_FINISH, request.request_id)
-
     def _commit_ready_results(self, request: Request, now_ms: float) -> None:
         while True:
             segment_id = request.completed_results.get(request.committed_pos)

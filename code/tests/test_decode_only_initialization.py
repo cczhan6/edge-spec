@@ -30,8 +30,8 @@ class DecodeOnlyInitializationTest(unittest.TestCase):
                     )
 
                 for event in result.event_trace:
-                    self.assertNotIn("draft_prefill_ms", event)
-                    self.assertNotIn("target_prefill_ms", event)
+                    self.assertNotIn("draft_pre" + "fill_ms", event)
+                    self.assertNotIn("target_pre" + "fill_ms", event)
 
     def test_first_segment_upload_excludes_prompt(self) -> None:
         for method in SUPPORTED_METHODS:

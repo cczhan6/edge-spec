@@ -24,9 +24,11 @@ SUPPORTED_METHODS = (
 DEFAULT_METHODS = (
     "full",
     "target_only",
-    "sync_batch_sd",
-    "SpecEdge",
-    "server_only",
+    "server_only_linear",
+    "specedge_linear",
+    "dip_sd",
+    "server_only_tree",
+    "specedge_tree",
 )
 
 

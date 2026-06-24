@@ -8,7 +8,26 @@ from src.model_runner import DraftCandidateTree, DraftTreeNode
 
 
 class MetricsSpeedupTest(unittest.TestCase):
-    def test_speedup_and_sync_ratio_use_distinct_baselines(self) -> None:
+    def test_speedup_and_canonical_ratios_use_distinct_baselines(self) -> None:
+        rows = [
+            {"method": "target_only", "avg_latency_ms": 100.0, "goodput_tok_s": 1.0},
+            {"method": "dip_sd", "avg_latency_ms": 80.0, "goodput_tok_s": 1.25},
+            {"method": "server_only_linear", "avg_latency_ms": 70.0, "goodput_tok_s": 1.4},
+            {"method": "server_only_tree", "avg_latency_ms": 65.0, "goodput_tok_s": 1.45},
+            {"method": "specedge_linear", "avg_latency_ms": 60.0, "goodput_tok_s": 1.75},
+            {"method": "specedge_tree", "avg_latency_ms": 55.0, "goodput_tok_s": 1.8},
+            {"method": "full", "avg_latency_ms": 50.0, "goodput_tok_s": 2.0},
+        ]
+        full = enrich_comparisons(rows)[6]
+        self.assertEqual(full["latency_speedup_vs_autoregressive"], 2.0)
+        self.assertEqual(full["latency_ratio_vs_dip_sd"], 1.6)
+        self.assertEqual(full["latency_ratio_vs_server_only_linear"], 1.4)
+        self.assertEqual(full["latency_ratio_vs_server_only_tree"], 1.3)
+        self.assertEqual(full["latency_ratio_vs_specedge_linear"], 1.2)
+        self.assertEqual(full["latency_ratio_vs_specedge_tree"], 1.1)
+        self.assertEqual(full["goodput_gain_vs_dip_sd"], 1.6)
+
+    def test_legacy_comparison_fields_fall_back_to_legacy_methods(self) -> None:
         rows = [
             {"method": "target_only", "avg_latency_ms": 100.0, "goodput_tok_s": 1.0},
             {"method": "sync_batch_sd", "avg_latency_ms": 75.0, "goodput_tok_s": 1.5},
@@ -16,7 +35,6 @@ class MetricsSpeedupTest(unittest.TestCase):
             {"method": "full", "avg_latency_ms": 50.0, "goodput_tok_s": 2.0},
         ]
         full = enrich_comparisons(rows)[3]
-        self.assertEqual(full["latency_speedup_vs_autoregressive"], 2.0)
         self.assertEqual(full["latency_ratio_vs_sync_batch_sd"], 1.5)
         self.assertEqual(full["latency_ratio_vs_specedge"], 1.2)
 

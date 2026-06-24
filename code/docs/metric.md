@@ -35,9 +35,9 @@
 | `avg_acceptance_rate` | 真实 accepted draft tokens 除以总 proposed draft positions；线性段等于主路径 draft tokens，树形段等于候选树可验证路径深度。 |
 | `avg_selected_gamma` | 调度器选择的平均 gamma。 |
 | `latency_speedup_vs_autoregressive` | 相对 `target_only` 的时延加速比。 |
-| `latency_ratio_vs_*` | 当前方法与指定基线的时延比值。 |
+| `latency_ratio_vs_*` | 当前方法与指定基线的时延比值，当前包含 `dip_sd`、`specedge_linear`、`specedge_tree`、`server_only_linear`、`server_only_tree`，并保留 legacy `sync_batch_sd`/`specedge` 字段。 |
 | `relative_latency_reduction_vs_*` | 相对指定基线的时延降低比例。 |
-| `goodput_gain_vs_*` | 相对指定基线的 goodput 提升比例。 |
+| `goodput_gain_vs_*` | 相对指定基线的 goodput 提升比例，当前包含 `target_only`、`dip_sd`，并保留 legacy `sync_batch_sd` 字段。 |
 
 `goodput_tok_s` 只统计最终提交给用户的 token。被 rejected、stale、discarded 或 proactive miss 消耗的 draft token 不计入 goodput。
 
@@ -69,8 +69,10 @@ SpecBench 原始类别会归并为 6 个顶层类别：`MT`、`QA`、`Math`、`R
 | `event_details_<scenario>_<method>.csv` | 查看 draft、verify、batch、target-only、server_only direct verify 和 request completion 事件。 |
 | `device_metrics_<scenario>_<method>.csv` | 比较虚拟 client 的固定 drafter、利用率、空闲时间、draft busy time、队列等待、请求数、生成 token、接受 token 和平均 gamma。 |
 
-`SpecEdge` 的对比字段名为 `latency_ratio_vs_specedge` 和 `relative_latency_reduction_vs_specedge`。其 pipeline-aware scheduling 事件会写入 `event_details` 的 `pipeline_schedule`、`global_batch_verify.batch_type` 和 `pipeline_idle_bubble_ms` 字段。draft 预算相关字段包括 `tree_strategy`、`tree_budget_nodes`、`draft_compute_nodes`、`processed_candidate_count`、`retained_tree_nodes`、`target_verify_tree_nodes`、`proposed_count` 和 `tree_path_switched`；默认 `specexec_approx` 时，`processed_candidate_count` 表示 draft forward 处理的 candidate 数，`retained_tree_nodes` 表示 logprob/budget pruning 后保留的候选树节点数，`target_verify_tree_nodes` 表示 target verify latency 使用的计费节点数，`proposed_count` 表示 acceptance 统计使用的可验证路径深度；显式切到 `linear` 时树预算等于主路径 gamma，target verify 按单段固定 forward 计费。其中 `tree_path_switched` 表示 target greedy 命中了候选树中的非主路径分支。
+`specedge_linear` 和 `specedge_tree` 的 canonical 对比字段名分别为 `latency_ratio_vs_specedge_linear`、`relative_latency_reduction_vs_specedge_linear`、`latency_ratio_vs_specedge_tree` 和 `relative_latency_reduction_vs_specedge_tree`。legacy `latency_ratio_vs_specedge` 字段仍会优先使用旧 `SpecEdge` 行；没有旧行时回退到 canonical SpecEdge 行。
 
-`event_details` 不包含 prefill 分项。`server_only` 不产生 `global_batch_verify` 事件。
+SpecEdge pipeline-aware scheduling 事件会写入 `event_details` 的 `pipeline_schedule`、`global_batch_verify.batch_type` 和 `pipeline_idle_bubble_ms` 字段。draft 预算相关字段包括 `tree_strategy`、`tree_budget_nodes`、`draft_compute_nodes`、`processed_candidate_count`、`retained_tree_nodes`、`target_verify_tree_nodes`、`proposed_count` 和 `tree_path_switched`；树形方法默认 `specexec_approx` 时，`processed_candidate_count` 表示 draft forward 处理的 candidate 数，`retained_tree_nodes` 表示 logprob/budget pruning 后保留的候选树节点数，`target_verify_tree_nodes` 表示 target verify latency 使用的计费节点数，`proposed_count` 表示 acceptance 统计使用的可验证路径深度。其中 `tree_path_switched` 表示 target greedy 命中了候选树中的非主路径分支。
+
+`event_details` 不包含 prefill 分项。`server_only_linear`、`server_only_tree` 和 legacy `server_only` 不产生 `global_batch_verify` 事件。
 request 明细中的 `arrival_time_ms` 与 `decode_ready_time_ms` 相等，表示请求进入仿真器时
-已经具备解码条件；server-only/target-only 的下行字段记录最终输出下载。
+已经具备解码条件；target-only 和 server-only baseline 的下行字段在 decode-only 口径下保持为零。
