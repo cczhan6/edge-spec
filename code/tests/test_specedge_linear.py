@@ -129,6 +129,104 @@ class SpecEdgeLinearTest(unittest.TestCase):
         self.assertTrue(any(segment.proactive_wasted_tokens for segment in result.segments))
         self.assertEqual(result.requests[0].proactive_draft_ids, [])
 
+    def test_specedge_linear_proactive_alignment_success(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=12)
+        config["speculation"]["gamma_candidates"] = [1]
+        config["specedge"]["server_batch_size"] = 1
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_linear",
+        ).run()
+
+        source = next(segment for segment in result.segments if segment.proactive_hit)
+        retained_suffix = source.proactive_draft_ids[1:]
+        reused_event = next(
+            event
+            for event in result.event_trace
+            if event["event"] == "draft_compute"
+            and event["proactive_reused_tokens"] == len(retained_suffix)
+        )
+        reused = result.segments[reused_event["segment_id"]]
+        source_verify = next(
+            event
+            for event in result.event_trace
+            if event["event"] == "verification_result"
+            and event["segment_id"] == source.segment_id
+        )
+
+        self.assertTrue(retained_suffix)
+        self.assertEqual(reused.draft_ids[: len(retained_suffix)], retained_suffix)
+        self.assertEqual(reused_event["proactive_reused_tokens"], len(retained_suffix))
+        self.assertGreaterEqual(reused_event["start_time_ms"], source_verify["finish_time_ms"])
+        self.assertEqual(source.emitted_ids, source.draft_ids + source.proactive_draft_ids[:1])
+        self.assertFalse(any(token in source.emitted_ids for token in retained_suffix))
+        self.assertEqual(
+            result.requests[0].generated_ids[reused.base_pos : reused.base_pos + len(retained_suffix)],
+            retained_suffix,
+        )
+
+    def test_specedge_linear_proactive_alignment_failure(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=8)
+        config["speculation"]["gamma_candidates"] = [1]
+        config["specedge"]["server_batch_size"] = 1
+
+        result = Simulator(
+            config,
+            rejecting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_linear",
+        ).run()
+
+        wasted_segments = [segment for segment in result.segments if segment.proactive_wasted_tokens]
+        self.assertTrue(wasted_segments)
+        self.assertFalse(any(segment.proactive_hit for segment in wasted_segments))
+        self.assertFalse(
+            any(
+                event["event"] == "draft_compute"
+                and event["proactive_reused_tokens"] > 0
+                for event in result.event_trace
+            )
+        )
+        self.assertEqual(result.requests[0].proactive_draft_ids, [])
+        self.assertGreaterEqual(
+            result.requests[0].wasted_draft_tokens,
+            sum(segment.proactive_wasted_tokens for segment in wasted_segments),
+        )
+        self.assertNotIn(2, result.requests[0].generated_ids)
+
+    def test_specedge_never_commits_unverified_proactive_tokens(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=12)
+        config["speculation"]["gamma_candidates"] = [1]
+        config["specedge"]["server_batch_size"] = 1
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_linear",
+        ).run()
+
+        for source in [segment for segment in result.segments if segment.proactive_hit]:
+            retained_suffix = source.proactive_draft_ids[1:]
+            if not retained_suffix:
+                continue
+            self.assertFalse(any(token in source.emitted_ids for token in retained_suffix))
+            reused_event = next(
+                event
+                for event in result.event_trace
+                if event["event"] == "draft_compute"
+                and event["proactive_reused_tokens"] == len(retained_suffix)
+            )
+            reused = result.segments[reused_event["segment_id"]]
+            self.assertTrue(reused.proactive_used)
+            self.assertEqual(reused.draft_ids[: len(retained_suffix)], retained_suffix)
+
     def test_specedge_linear_output_equals_target_only(self) -> None:
         config, _, workload = small_config(num_requests=2, output_len=7)
         config["specedge"]["server_batch_size"] = 2

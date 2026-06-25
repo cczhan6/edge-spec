@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,12 @@ DEFAULT_METHODS = (
     "specedge_tree",
 )
 
+LEGACY_METHOD_ALIASES = {
+    "sync_batch_sd": "dip_sd",
+    "SpecEdge": "specedge_tree",
+    "server_only": "server_only_tree",
+}
+
 
 @dataclass(frozen=True)
 class MethodSpec:
@@ -50,6 +57,14 @@ class MethodSpec:
 def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
     if name not in SUPPORTED_METHODS:
         raise ValueError(f"unsupported method: {name}")
+    if name in LEGACY_METHOD_ALIASES:
+        canonical = LEGACY_METHOD_ALIASES[name]
+        warnings.warn(
+            f"method {name!r} is deprecated; use canonical method {canonical!r}",
+            FutureWarning,
+            stacklevel=2,
+        )
+        name = canonical
     num_lanes = int(config["edge"]["num_lanes"])
     if name == "target_only":
         return MethodSpec(name, "target_only", "heterogeneous", 0, 0, False, "none", "none")
@@ -117,12 +132,6 @@ def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
             "fine_grained",
             candidate_strategy="linear",
         )
-    if name == "sync_batch_sd":
-        return MethodSpec(name, "sync", "heterogeneous", 1, 0, True, "global_batch", "fine_grained", global_batch=True, batch_timeout=True)
-    if name == "SpecEdge":
-        return MethodSpec(name, "specedge", "heterogeneous", 1, 0, False, "global_batch", "fine_grained", global_batch=True, batch_timeout=True)
-    if name == "server_only":
-        return MethodSpec(name, "server_only_specedge", "heterogeneous", 1, 0, True, "none", "fine_grained")
     if name == "wo_async":
         return MethodSpec(name, "async", "heterogeneous", 1, num_lanes, True, "least_finish", "fine_grained")
     if name == "wo_scheduling":

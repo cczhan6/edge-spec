@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M19 complete
+Current milestone: M20 complete
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -19,7 +19,93 @@ Current milestone: M19 complete
 | M16 Full DiP-SD paper optimizer | complete | `07bc84c` | `pytest -q tests/test_dip_sd.py` -> 16 passed; `pytest -q` -> 144 passed |
 | M17 DiP-SD optimizer simulation integration | complete | `a1fbd02` | `pytest -q tests/test_dip_sd.py` -> 24 passed; `pytest -q` -> 152 passed |
 | M18 DiP-SD public interface cleanup | complete | `b7410ec` | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 151 passed; method-specific pytest 63 passed; static checks passed; `pytest -q` -> 151 passed; `git diff --check` -> passed |
-| M19 Final baseline display/default alignment | complete | this commit | `pytest -q` -> 154 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 154 passed; method-specific pytest 66 passed; static checks passed; `git diff --check` -> passed |
+| M19 Final baseline display/default alignment | complete | `c85f9eb` | `pytest -q` -> 154 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 154 passed; method-specific pytest 66 passed; static checks passed; `git diff --check` -> passed |
+| M20 Baseline event semantics validation | complete | this commit | `pytest -q` -> 176 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 176 passed; method-specific pytest 79 passed; static checks passed |
+
+## M20 Baseline Event Semantics Validation
+
+### Completion Conditions
+
+- Added deterministic DiP-SD online trace tests for optimizer assignment,
+  per-request draft lengths, batch-local slow-device blocking, cross-batch
+  drafting progress, ordered server verification, post-verify/state-update
+  redraft gating, epoch-barrier admission, and one unverified segment per
+  request.
+- Added SpecEdge proactive alignment tests for `specedge_linear` and
+  `specedge_tree`, including success, failure, retained suffix/subtree reuse,
+  wasted invalid proactive tokens, and no direct commit of unverified proactive
+  tokens.
+- Added canonical invariant tests across `target_only`,
+  `server_only_linear`, `server_only_tree`, `specedge_linear`,
+  `specedge_tree`, and `dip_sd` for token accounting, target/draft resource
+  non-overlap, event time well-formedness, target-greedy equality, and no
+  pending unverified state at request finish.
+- Audited legacy aliases and changed them into strict canonical redirects:
+  `sync_batch_sd -> dip_sd`, `SpecEdge -> specedge_tree`, and
+  `server_only -> server_only_tree`.
+- Kept proposed methods unchanged, did not restore prefill, did not change
+  Server-only default `batch_size=1`, and did not add a new scheduling
+  mechanism.
+
+### Exposed Issues And Fixes
+
+- Legacy aliases still entered old simulator semantics. Fixed
+  `src/methods.py` so aliases return canonical `MethodSpec`s and emit visible
+  `FutureWarning`s.
+- Explicit alias CLI runs produced canonical metric rows but legacy-named
+  detail CSV artifacts. Fixed `scripts/run_all.py` to name request, segment,
+  event, device, and round-trace detail files with `result.method`.
+- Existing legacy tests assumed `SpecEdge` and `server_only` could still be
+  config-multiplexed into linear/tree behavior. Updated those tests to assert
+  canonical tree aliasing instead.
+
+### New Tests
+
+- `test_dip_sd_trace_uses_optimizer_assignment`
+- `test_dip_sd_trace_uses_per_request_draft_length`
+- `test_dip_sd_slow_member_blocks_own_batch`
+- `test_dip_sd_other_batch_can_continue_drafting`
+- `test_dip_sd_verification_follows_batch_order`
+- `test_dip_sd_request_waits_for_verify_and_kv_update`
+- `test_dip_sd_online_arrival_waits_for_epoch_boundary`
+- `test_dip_sd_one_unverified_segment_per_request`
+- `test_specedge_linear_proactive_alignment_success`
+- `test_specedge_linear_proactive_alignment_failure`
+- `test_specedge_tree_proactive_alignment_success`
+- `test_specedge_tree_proactive_alignment_failure`
+- `test_specedge_never_commits_unverified_proactive_tokens`
+- `test_token_accounting_conservation`
+- `test_no_illegal_target_resource_overlap`
+- `test_no_illegal_draft_resource_overlap`
+- `test_event_time_monotonicity_all_methods`
+- `test_all_lossless_methods_equal_target_greedy`
+- `test_no_request_finishes_with_pending_unverified_state`
+- `tests/test_legacy_aliases.py`
+
+### Trace Readiness
+
+| Method | Deterministic trace readiness | Caveat |
+|---|---|---|
+| `target_only` | ready | Single serialized target service, decode-only. |
+| `server_only_linear` | ready | Main contract remains `server_only.batch_size=1`. |
+| `server_only_tree` | ready | `specexec_approx`; main contract remains `server_only.batch_size=1`. |
+| `specedge_linear` | ready | Proactive alignment covered for deterministic fake-runner traces. |
+| `specedge_tree` | ready | `specexec_approx`; not exact official tree-kernel replay. |
+| `dip_sd` | ready | Online epoch/barrier adaptation of the paper optimizer. |
+
+### Commands And Results
+
+- `pytest -q` -> 176 passed.
+- `bash scripts/verify_baseline_rebuild.sh` -> full pytest 176 passed;
+  method-specific pytest 79 passed; no-prefill and public DiP-SD static checks
+  passed.
+
+### Deviations Remaining
+
+- Server-only `batch_size > 1` is still an optional extension and remains
+  rejected until real multi-request server-only verification is implemented.
+- Tree baselines using `specexec_approx` must not be described as exact
+  official SpecEdge tree-kernel replay.
 
 ## M19 Final Baseline Display And Default Alignment
 

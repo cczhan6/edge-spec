@@ -118,6 +118,72 @@ class SpecEdgeTreeCoreTest(unittest.TestCase):
         self.assertTrue(any(segment.proactive_wasted_tokens for segment in result.segments))
         self.assertEqual(result.requests[0].proactive_draft_ids, [])
 
+    def test_specedge_tree_proactive_alignment_success(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=12)
+        config["speculation"]["gamma_candidates"] = [1]
+        config["specedge"]["server_batch_size"] = 1
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_tree",
+        ).run()
+
+        source = next(segment for segment in result.segments if segment.proactive_hit)
+        retained_suffix = source.proactive_draft_ids[1:]
+        source_verify = next(
+            event
+            for event in result.event_trace
+            if event["event"] == "verification_result"
+            and event["segment_id"] == source.segment_id
+        )
+        reused_event = next(
+            event
+            for event in result.event_trace
+            if event["event"] == "draft_compute"
+            and event["proactive_reused_tokens"] == len(retained_suffix)
+        )
+        reused = result.segments[reused_event["segment_id"]]
+        accepted_prefix = source.prefix_ids + source.emitted_ids[: int(source.accepted_count or 0)]
+
+        self.assertEqual(source.tree_strategy, "specexec_approx")
+        self.assertIsNotNone(source.proactive_draft_tree)
+        self.assertEqual(source.proactive_draft_tree.prefix_ids, accepted_prefix)
+        self.assertTrue(retained_suffix)
+        self.assertEqual(reused.draft_ids[: len(retained_suffix)], retained_suffix)
+        self.assertEqual(reused_event["proactive_reused_tokens"], len(retained_suffix))
+        self.assertGreaterEqual(reused_event["start_time_ms"], source_verify["finish_time_ms"])
+        self.assertFalse(any(token in source.emitted_ids for token in retained_suffix))
+
+    def test_specedge_tree_proactive_alignment_failure(self) -> None:
+        config, _, workload = small_config(num_requests=1, output_len=8)
+        config["speculation"]["gamma_candidates"] = [1]
+        config["specedge"]["server_batch_size"] = 1
+
+        result = Simulator(
+            config,
+            rejecting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_tree",
+        ).run()
+
+        wasted_segments = [segment for segment in result.segments if segment.proactive_wasted_tokens]
+        self.assertTrue(wasted_segments)
+        self.assertFalse(any(segment.proactive_hit for segment in wasted_segments))
+        self.assertFalse(
+            any(
+                event["event"] == "draft_compute"
+                and event["proactive_reused_tokens"] > 0
+                for event in result.event_trace
+            )
+        )
+        self.assertTrue(any(segment.tree_path_switched or segment.status == "rejected" for segment in wasted_segments))
+        self.assertEqual(result.requests[0].proactive_draft_ids, [])
+        self.assertNotIn(2, result.requests[0].generated_ids)
+
     def test_specedge_tree_output_equals_target_only(self) -> None:
         config, _, workload = small_config(num_requests=2, output_len=7)
         config["specedge"]["server_batch_size"] = 2

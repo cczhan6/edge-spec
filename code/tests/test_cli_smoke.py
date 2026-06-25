@@ -116,7 +116,7 @@ class CliSmokeTest(unittest.TestCase):
             self.assertIn('  - "combined_strong_heterogeneous"', manifest)
             self.assertIn('  - "full"', manifest)
 
-    def test_tree_draft_strategy_cli_override_disables_tree_baseline(self) -> None:
+    def test_specedge_alias_cli_reports_canonical_tree_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "config.yaml"
@@ -153,12 +153,14 @@ class CliSmokeTest(unittest.TestCase):
                 text=True,
             )
 
-            self.assertIn("metrics: SpecEdge", completed.stderr)
-            with (output / "segment_details_smoke_SpecEdge.csv").open(encoding="utf-8") as handle:
+            self.assertIn("deprecated; use canonical method 'specedge_tree'", completed.stderr)
+            self.assertIn("metrics: specedge_tree", completed.stderr)
+            with (output / "segment_details_smoke_specedge_tree.csv").open(encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertTrue(rows)
-            self.assertTrue(all(row["tree_strategy"] == "linear" for row in rows))
-            self.assertTrue(all(int(row["target_verify_tree_nodes"]) <= 1 for row in rows))
+            self.assertTrue(all(row["method"] == "specedge_tree" for row in rows))
+            self.assertTrue(all(row["tree_strategy"] == "specexec_approx" for row in rows))
+            self.assertTrue(all(int(row["target_verify_tree_nodes"]) > 1 for row in rows))
 
     def test_summary_only_skips_per_method_detail_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -244,8 +246,9 @@ class CliSmokeTest(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            self.assertIn("metrics: server_only", completed.stderr)
-            self.assertTrue((output / "event_details_smoke_server_only.csv").exists())
+            self.assertIn("deprecated; use canonical method 'server_only_tree'", completed.stderr)
+            self.assertIn("metrics: server_only_tree", completed.stderr)
+            self.assertTrue((output / "event_details_smoke_server_only_tree.csv").exists())
 
     def test_removed_wall_time_flags_are_rejected(self) -> None:
         for removed_args in (

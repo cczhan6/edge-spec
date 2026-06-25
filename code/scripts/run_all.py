@@ -109,29 +109,30 @@ def run_experiments(
             system_rows.append(system)
             _print_method_metrics(main, progress_stream)
             if write_details:
+                detail_method = result.method
                 segment_detail_rows = segment_rows(result)
                 write_csv(
-                    raw_dir / f"request_details_{scenario}_{method}.csv",
+                    raw_dir / f"request_details_{scenario}_{detail_method}.csv",
                     request_rows(result),
                     REQUEST_FIELDS,
                 )
                 write_csv(
-                    raw_dir / f"segment_details_{scenario}_{method}.csv",
+                    raw_dir / f"segment_details_{scenario}_{detail_method}.csv",
                     segment_detail_rows,
                     SEGMENT_FIELDS,
                 )
                 write_csv(
-                    raw_dir / f"event_details_{scenario}_{method}.csv",
+                    raw_dir / f"event_details_{scenario}_{detail_method}.csv",
                     event_rows(result),
                     EVENT_FIELDS,
                 )
                 write_csv(
-                    raw_dir / f"device_metrics_{scenario}_{method}.csv",
+                    raw_dir / f"device_metrics_{scenario}_{detail_method}.csv",
                     device_rows(result),
                     DEVICE_FIELDS,
                 )
                 write_csv(
-                    raw_dir / f"round_trace_{scenario}_{method}.csv",
+                    raw_dir / f"round_trace_{scenario}_{detail_method}.csv",
                     segment_detail_rows,
                     SEGMENT_FIELDS,
                 )
