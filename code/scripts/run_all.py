@@ -26,6 +26,7 @@ from src.metrics import (
 from src.simulator import Simulator
 from src.model_runner import build_model_runner
 from src.workload import load_workload
+from scripts.baseline_trace import write_trace_bundle
 from scripts.progress import ProgressReporter
 
 
@@ -47,9 +48,12 @@ def run_experiments(
     samples_per_category: int | None = None,
     write_details: bool = True,
     tree_draft_strategy: str | None = None,
+    trace_bundle_dir: str | None = None,
 ) -> list[dict]:
     if single_out and (len(scenarios) != 1 or len(methods) != 1):
         raise ValueError("--out requires exactly one scenario and one method")
+    if trace_bundle_dir and (len(scenarios) != 1 or len(methods) != 1):
+        raise ValueError("--trace-bundle-dir requires exactly one scenario and one method")
     model_runner = build_model_runner(
         apply_tree_draft_strategy(load_config(config_path), tree_draft_strategy),
         use_fake_model_runner=use_fake_model_runner,
@@ -102,6 +106,8 @@ def run_experiments(
             result = simulator.run()
             request_progress.finish_line()
             main, system = summarize(result, int(config["simulation"]["num_devices"]))
+            if trace_bundle_dir:
+                write_trace_bundle(trace_bundle_dir, config, result, main, system)
             main_rows.append(main)
             category_main_rows.extend(
                 category_rows(result, int(config["simulation"]["num_devices"]))
@@ -259,6 +265,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write only scenario/category/system summaries and skip per-method detail CSVs.",
     )
+    parser.add_argument(
+        "--trace-bundle-dir",
+        help=(
+            "Write deterministic per-method trace files into this directory. "
+            "Requires one scenario and one method."
+        ),
+    )
     return parser
 
 
@@ -278,6 +291,7 @@ def main() -> None:
         samples_per_category=args.samples_per_category,
         write_details=not args.summary_only,
         tree_draft_strategy=args.tree_draft_strategy,
+        trace_bundle_dir=args.trace_bundle_dir,
     )
     print(f"wrote {len(rows)} method rows")
 
