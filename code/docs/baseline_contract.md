@@ -537,6 +537,8 @@ For an active cohort of \(M\) requests:
 All tie-breakers and iteration limits must be deterministic and recorded.
 
 If the full solver is not yet implemented, the method must be named `dip_sd_greedy` rather than `dip_sd`.
+The completed implementation uses `dip_sd.optimizer: paper_exact`; static,
+greedy, or heuristic DiP-SD method names are not valid public baselines.
 
 ## 7.9 Online-arrival adaptation
 
@@ -733,12 +735,18 @@ test_specedge_never_commits_proactive_tokens_early
 ## 10.5 DiP-SD
 
 ```text
-test_dip_sd_partition_is_complete_and_disjoint
-test_dip_sd_batch_order_is_cyclic
+test_dip_sd_optimizer_assignment_is_complete_and_disjoint
+test_dip_sd_verification_follows_paper_batch_order
 test_dip_sd_request_waits_for_sync_before_redraft
 test_dip_sd_new_arrivals_wait_until_epoch_barrier
 test_dip_sd_optimizer_uses_only_estimated_acceptance
-test_dip_sd_solver_is_deterministic
+test_optimizer_is_deterministic
+test_dip_sd_optimizer_matches_bruteforce_on_tiny_cases
+test_dip_sd_trace_uses_optimizer_batch_assignment
+test_dip_sd_trace_uses_per_request_draft_lengths
+test_dip_sd_slow_member_blocks_assigned_batch
+test_dip_sd_other_batches_overlap_drafting
+test_dip_sd_trace_span_matches_optimizer_model
 ```
 
 ---

@@ -25,6 +25,11 @@ paper's complete DiP-SD method. A static or heuristic synchronized pipeline is
 not an acceptable public baseline substitute, and `dip_sd` must refer to the
 paper method.
 
+M18 update: the DiP-SD findings from the original audit have been remediated.
+Canonical `dip_sd` now uses the paper optimizer and optimizer-controlled event
+simulation, while `dip_sd_greedy`, `dip_sd_static`, and `dip_sd_heuristic` are
+not public method names.
+
 ## 1. Executive Summary
 
 | Area | Verdict | Paper-experiment impact |
@@ -34,12 +39,12 @@ paper method.
 | `server_only_tree` | PARTIAL | Real tree candidate/verify path exists, but server-only batching gap blocks final batched claims. |
 | `specedge_linear` | PARTIAL | Main proactive and server batch mechanics exist. Needs stronger trajectory tests before final official-comparison claims. |
 | `specedge_tree` | PARTIAL | Real tree construction and verification exist. Upstream tree/proactive alignment fidelity remains approximate. |
-| Full `dip_sd` | FAIL | Current code implements a static/heuristic synchronized pipeline, not the paper's full joint batch-count, grouping, and per-user draft-length optimization. |
+| Full `dip_sd` | PASS | Paper-level batch-count, assignment, per-user draft-length optimization and optimizer-controlled event simulation are implemented. |
 | Shared correctness | PARTIAL | Greedy equality is tested on selected paths, but token-accounting and resource-interval invariants are not independently validated. |
 | Legacy aliases | FAIL | Legacy aliases still carry old semantics/config paths instead of being thin mappings to canonical baselines. |
 
-Must-fix items are concentrated in three places: true server-only batching,
-complete DiP-SD implementation, and legacy alias behavior.
+Must-fix items are now concentrated in true server-only batching, legacy alias
+behavior, and broader shared invariant checks.
 
 ## 2. Contract-to-Code Matrix
 
@@ -50,7 +55,7 @@ complete DiP-SD implementation, and legacy alias behavior.
 | Server-only tree SD | Same server-only simulator path; `src/tree_drafting.py::SpecExecDraftTreeStrategy`; `src/model_runner.py::DraftCandidateTree`, `verify_tree`, `verify_tree_batch` | Uses real tree objects and tree verification, but inherits the single-active-request server-only scheduler. | `tests/test_server_only_tree.py`, `tests/test_specedge_methods.py` | PARTIAL |
 | SpecEdge linear | `src/methods.py::get_method_spec("specedge_linear")`; `src/simulator.py::_maybe_start_batch`, `_start_proactive_draft`, `_resolve_proactive_after_accept`, `_resolve_verification` | Edge draft, uplink, server batch verify, downlink, proactive continuation. Conservative commit path, but exact proactive source identity is not exhaustively tested. | `tests/test_specedge_linear.py` | PARTIAL |
 | SpecEdge tree | `src/tree_drafting.py`, `src/model_runner.py::draft_tree`, `draft_bonus_tree`, `verify_tree_batch`; `src/simulator.py::_resolve_proactive_after_accept` | Real tree candidates, tree attention mask verification, proactive subtree generation/rebase. Strategy is documented as SpecExec-inspired approximation. | `tests/test_specedge_tree.py` | PARTIAL |
-| Full DiP-SD | `src/simulator.py::_run_dip_sd_greedy`; `src/dip_sd.py::build_fixed_epoch_plan`, `optimize_epoch_plan` | Current code still exposes/uses static and heuristic planning paths. Neither is the original paper method. | `tests/test_dip_sd.py` | FAIL |
+| Full DiP-SD | `src/simulator.py::_run_dip_sd`; `src/dip_sd.py::optimize_dip_sd`, `solve_assignment_subproblem`, `solve_draft_length_subproblem`, `evaluate_plan` | Uses the paper variables, exact bounded subproblem solvers, Dinkelbach-equivalent objective updates, and optimizer-controlled event execution. Static/greedy public paths are removed. | `tests/test_dip_sd.py` | PASS |
 | Decode-only / no prefill | `README.md`; `scripts/verify_baseline_rebuild.sh`; `src/`, `configs/`, `tests/` grep check | Decode-ready scope is documented and static check rejects prefill execution identifiers outside markdown. | `scripts/verify_baseline_rebuild.sh`, `tests/test_decode_only_initialization.py` | PASS |
 | Legacy aliases | `src/methods.py::SUPPORTED_METHODS`, `get_method_spec`; `src/metrics.py` baseline fallback logic | `sync_batch_sd`, `SpecEdge`, and `server_only` are accepted, but not proven to be thin aliases to canonical rebuilt methods. | `tests/test_specedge_methods.py`, `tests/test_cli_smoke.py` | FAIL |
 
@@ -292,70 +297,58 @@ Paper impact:
 
 ## 8. Full DiP-SD Audit
 
-Status: FAIL.
+Status: PASS after M18.
 
 Code path:
 
-- `src/methods.py::get_method_spec("dip_sd_greedy")` selects runtime `dip_sd`
-  and linear candidates.
-- `src/methods.py::get_method_spec("dip_sd")` also selects runtime `dip_sd`.
-- `src/simulator.py::Simulator.run` dispatches all `runtime == "dip_sd"` methods
-  to `_run_dip_sd_greedy`.
-- `src/simulator.py::_run_dip_sd_greedy` uses `build_fixed_epoch_plan` for
-  `dip_sd_greedy`, but uses `optimize_epoch_plan` when `self.spec.name ==
-  "dip_sd"`.
-- `src/dip_sd.py::build_fixed_epoch_plan` builds fixed cyclic batches and fixed
-  draft lengths from explicit config.
-- `src/dip_sd.py::optimize_epoch_plan` is a deterministic heuristic extension
-  using configured acceptance priors. It is not a reproduction of the paper's
-  optimizer.
+- `src/methods.py::get_method_spec("dip_sd")` selects runtime `dip_sd` and
+  linear candidates.
+- `src/simulator.py::Simulator.run` dispatches `runtime == "dip_sd"` to
+  `_run_dip_sd`.
+- `src/simulator.py::_run_dip_sd` builds a `DipSDProblem` for the current active
+  epoch, calls `optimize_dip_sd`, drafts according to `plan.draft_lengths`, and
+  verifies according to `plan.batches`.
+- `src/dip_sd.py::optimize_dip_sd` scans feasible batch counts, solves exact
+  bounded assignment and draft-length subproblems, and uses a
+  Dinkelbach-equivalent fractional objective for `R=U/S`.
+- Static/greedy substitute functions and public method names are removed from
+  code paths. `dip_sd.optimizer` must be `paper_exact`.
 
 Actual behavior against the full DiP-SD boundary:
 
 | Requirement | Verdict | Evidence |
 | --- | --- | --- |
 | Candidates are linear segments | PASS | DiP-SD segments set `tree_strategy="linear"` and use `model_runner.draft`. |
-| One unverified segment per request per round | PASS | Each active request appears once in the epoch plan; next draft uses `request_ready_ms`. |
-| Request waits for verification/result update before next round | PASS | `request_ready_ms` is set to result arrival time; epoch end waits for result arrivals. |
-| Batches are non-empty and visited in deterministic order | PASS | The simulator iterates `for batch_index, batch in enumerate(plan.batches)`. |
-| Batch waits for all members ready | PASS | `batch_ready_ms = max(segment.edge_arrival_time_ms for segment in segments)`. |
-| Slow device blocks its batch | PASS | The max edge-arrival time gates the batch verify start. |
-| Other batches can draft while one batch verifies | PARTIAL | Draft timestamps are computed independently from request readiness, so traces can overlap with server verification. A dedicated slow-device test is still missing. |
-| New arrivals join only at safe epoch/cycle boundary | PASS | Waiting requests are admitted at the start of epochs, not mid-batch. |
-| Reads future acceptance | PASS | The heuristic uses configured profile priors, not future target outcomes. |
-| Acceptance estimator uses offline or past information | PARTIAL | Configured profile priors are oracle-free, but there is no implemented estimator from offline samples or past observed acceptance. |
-| Batch-count optimization | PARTIAL | `optimize_epoch_plan` scans up to configured `batch_count`, but it is a bounded heuristic search, not the paper's full optimization loop. |
-| User-to-batch assignment optimization | FAIL | Assignment is a greedy load-balancing heuristic, not the paper's association optimization. |
-| Per-user draft-length optimization | PARTIAL | Draft lengths are searched within configured bounds, but the subproblem is not the paper's Dinkelbach/MILP-equivalent formulation. |
-| Objective and pipeline span model match the paper | FAIL | The span model in `src/dip_sd.py` is simplified and does not model the paper's complete latency/objective terms. |
-| Dinkelbach/fractional programming or equivalent exact solver | FAIL | No such solver or equivalent exact subproblem exists. |
-| Method name `dip_sd` reserved for complete method | FAIL | The canonical `dip_sd` name currently executes the heuristic path. |
-| Output equals target-only greedy | PARTIAL | Covered by selected tests, but not by broad trajectory/randomized invariants. |
+| One unverified segment per request per round | PASS | Each active request appears once in the optimizer plan; redraft waits for result arrival and the next epoch barrier. |
+| Request waits for verification/result update before next round | PASS | `request_ready_ms` is set to result arrival time and draft start is bounded by the epoch start. |
+| Batches are non-empty and visited in deterministic order | PASS | Optimizer validation rejects empty batches; simulator iterates ordered `plan.batches`. |
+| Batch waits for all members ready | PASS | Runtime batch verify waits for max member edge-arrival time. |
+| Slow device blocks its batch | PASS | Covered by `test_dip_sd_slow_member_blocks_assigned_batch`. |
+| Other batches can draft while one batch verifies | PASS | Covered by `test_dip_sd_other_batches_overlap_drafting`. |
+| New arrivals join only at safe epoch/cycle boundary | PASS | Waiting requests are admitted only at epoch starts. |
+| Reads future acceptance | PASS | Optimizer input has no future-acceptance field and uses prior/past estimator values. |
+| Acceptance estimator uses offline or past information | PASS | Cold start uses configured priors; after verification, observed accepted/proposed counts update the causal estimator. |
+| Batch-count optimization | PASS | `optimize_dip_sd` scans feasible `N` values. |
+| User-to-batch assignment optimization | PASS | `solve_assignment_subproblem` solves fixed-length assignment exactly for bounded active cohorts. |
+| Per-user draft-length optimization | PASS | `solve_draft_length_subproblem` solves bounded integer lengths with Dinkelbach-equivalent updates. |
+| Objective and pipeline span model match the paper | PASS | `evaluate_plan` computes `U`, `S`, ready times, verify times, stage durations, and memory usage. |
+| Dinkelbach/fractional programming or equivalent exact solver | PASS | Bounded exact enumeration uses the Dinkelbach score `U - qS` and convergence tolerance. |
+| Method name `dip_sd` reserved for complete method | PASS | `dip_sd_greedy`, `dip_sd_static`, and `dip_sd_heuristic` are not registered. |
+| Output equals target-only greedy | PASS | Covered for accepting and rejecting fake runners. |
 
-Existing tests:
+Remaining caveats:
 
-- `tests/test_dip_sd.py` checks registration, fixed cyclic order, optimizer
-  deterministic behavior, sync before redraft, epoch-barrier admission, one
-  unverified segment per request, and output equality.
-- The tests do not check optimizer optimality, association correctness, objective
-  fidelity, Dinkelbach/MILP-equivalent behavior, or paper-level convergence.
-
-Issues:
-
-- The current implementation is not full DiP-SD.
-- The existing static/heuristic path should be replaced by the original paper
-  method and should not remain a public baseline.
-- The canonical `dip_sd` name must mean the complete paper method.
-- The required full implementation needs batch-count search, user-to-batch
-  association optimization, per-user draft-length optimization, a paper-faithful
-  objective/span model, and offline/past acceptance estimation.
-- Missing trace test for two batches, one slow device, and visible batch-to-batch
-  pipeline overlap.
+- The simulator is an online epoch-barrier adaptation of the paper's fixed
+  active-cohort optimization horizon.
+- Trace span validation compares optimizer `S` to ordered verification-stage
+  span; full epoch wall-clock includes warm-up/drain and barrier overhead.
+- Hardware cost coefficients are analytical configuration parameters and should
+  be calibrated before large-scale real-model claims.
 
 Paper impact:
 
-- Current DiP-SD-related methods are not ready for paper formal results.
-- No static/heuristic DiP-SD substitute should be reported as a baseline.
+- `dip_sd` is now suitable for small-scale and formal experiments under the
+  documented analytical latency model and online epoch-barrier adaptation.
 
 ## 9. Shared Correctness Audit
 
@@ -434,7 +427,7 @@ Setup:
 1. Two fixed batches.
 2. Two requests per batch.
 3. One device is much slower.
-4. Fixed draft length.
+4. Optimizer-controlled per-request draft length.
 
 Expected assertions:
 
@@ -446,8 +439,11 @@ Expected assertions:
   verification result and updating state.
 - Trace shows real batch-to-batch draft/verify overlap.
 
-Expected current result: likely PARTIAL/PASS, but not currently proven by a
-dedicated trace test.
+Expected current result: PASS after M17. Covered by
+`test_dip_sd_slow_member_blocks_assigned_batch`,
+`test_dip_sd_other_batches_overlap_drafting`,
+`test_dip_sd_verification_follows_paper_batch_order`, and
+`test_dip_sd_request_waits_for_verification_before_redraft`.
 
 ### Test D: Full DiP-SD Optimizer Correctness
 
@@ -463,24 +459,18 @@ Setup:
 3. Compare the implemented `dip_sd` plan to the oracle optimum.
 4. Include at least one case where greedy load assignment is suboptimal.
 
-Expected current result: FAIL.
+Expected current result: PASS after M16/M17. Covered by
+`test_dip_sd_optimizer_matches_bruteforce_on_tiny_cases` and trace tests proving
+the simulator executes the optimizer plan.
 
 ## 11. Required Fixes
 
 1. Implement true multi-request server-only batch verification for
    `server_only_linear` and `server_only_tree`, or document `batch_size` as
    currently limited to 1 and remove larger values from valid final experiments.
-2. Implement the complete DiP-SD planner for canonical `dip_sd`: batch-count
-   search, user-to-batch association optimization, per-user draft-length
-   optimization, paper-faithful objective/span model, and offline/past acceptance
-   estimation.
-3. Remove the public `dip_sd_greedy` / static substitute path from final method
-   registration, or make it internal-only while developing the original paper
-   method.
-4. Make legacy aliases strict mappings to canonical implementations, or exclude
+2. Make legacy aliases strict mappings to canonical implementations, or exclude
    them from final experiment method sets.
-5. Add the missing trajectory/optimizer tests above.
-6. Add shared invariant validators for token accounting, resource interval
+3. Add shared invariant validators for token accounting, resource interval
    overlap, event causality, and target-only greedy equality.
 
 ## 12. Recommended Fixes
@@ -501,8 +491,8 @@ Expected current result: FAIL.
 - Decode-only scope is acceptable: prompt prefill, initial prompt transfer, and
   initial KV establishment remain out of simulation time.
 - Server-only `batch_size = 1` is acceptable as a correctness-only baseline.
-- A static DiP-SD-style pipeline is not an accepted baseline for this project.
-  Replace it with the original paper method.
+- Static, greedy, or heuristic DiP-SD substitutes are not accepted baselines.
+  The public method set now exposes only canonical `dip_sd`.
 - Configured/offline acceptance priors are acceptable as long as no future target
   outcomes are read.
 - `specexec_approx` tree construction is acceptable for small experiments if it
@@ -513,19 +503,18 @@ Expected current result: FAIL.
 | Readiness level | Methods | Conditions |
 | --- | --- | --- |
 | Can run unit tests | All canonical baselines | Current suite can be run, but passing tests are not sufficient for semantic closure. |
-| Can run small trace experiments | `target_only`, `server_only_linear` with batch size 1, `server_only_tree` with batch size 1, `specedge_linear`, `specedge_tree` | Report caveats in manifests and analysis. |
-| Can run real-model smoke trials | `target_only`, batch-size-1 server-only baselines, SpecEdge linear/tree | Use small samples first; inspect traces, not only aggregate metrics. |
-| Can enter paper formal experiments | `target_only` now; other baselines only after required fixes/tests | Server-only batching, SpecEdge proactive alignment, and full DiP-SD optimizer must be resolved first. |
-| Temporarily cannot use | Server-only with `batch_size > 1`; legacy aliases for final results; current `dip_sd` as full DiP-SD | These would misstate the implemented semantics. |
+| Can run small trace experiments | `target_only`, `dip_sd`, `server_only_linear` with batch size 1, `server_only_tree` with batch size 1, `specedge_linear`, `specedge_tree` | Report caveats in manifests and analysis. |
+| Can run real-model smoke trials | `target_only`, `dip_sd`, batch-size-1 server-only baselines, SpecEdge linear/tree | Use small samples first; inspect traces, not only aggregate metrics. |
+| Can enter paper formal experiments | `target_only`, `dip_sd` | Server-only batching, legacy aliases, and stronger SpecEdge proactive invariants remain outside this readiness level. |
+| Temporarily cannot use | Server-only with `batch_size > 1`; legacy aliases for final results | These would misstate the implemented semantics. |
 
 ## Final Findings
 
 Must fix:
 
 - Server-only real batching is missing.
-- Full DiP-SD is not implemented; current `dip_sd` is heuristic/static-like.
 - Legacy aliases are not clean canonical aliases.
-- Required trajectory and shared invariant tests are missing.
+- Shared token-accounting/resource-interval invariant tests are still missing.
 
 Recommended:
 
@@ -536,20 +525,19 @@ Recommended:
 Acceptable:
 
 - No prefill.
-- No DiP-SD substitute baseline is accepted; implement the original paper method.
+- No DiP-SD substitute baseline is accepted; public `dip_sd` is the paper-method
+  implementation.
 - Tree approximation for small experiments when labeled.
 
 Small-scale ready:
 
 - `target_only`
+- `dip_sd`
 - `server_only_linear` / `server_only_tree` only with batch size 1
 - `specedge_linear` / `specedge_tree` with alignment caveats
-- No DiP-SD variant is currently small-scale ready under the required original
-  paper-method scope
 
 Not ready for final paper results:
 
 - Server-only `batch_size > 1`
 - Legacy aliases
-- Current `dip_sd` as the full DiP-SD paper baseline
 - SpecEdge final official-comparison claims before missing trajectory tests pass

@@ -12,7 +12,6 @@ from src.dip_sd import (
     DipSDModelProfile,
     DipSDProblem,
     DipSDUser,
-    build_fixed_epoch_plan,
     optimize_dip_sd,
 )
 from src.entities import (
@@ -156,7 +155,7 @@ class Simulator:
 
     def run(self) -> SimulationResult:
         if self.spec.runtime == "dip_sd":
-            return self._run_dip_sd_greedy()
+            return self._run_dip_sd()
         self._schedule_request_arrivals()
         while self.events or self._batch_buffer:
             if not self.events:
@@ -185,7 +184,7 @@ class Simulator:
             event_trace=self._trace,
         )
 
-    def _run_dip_sd_greedy(self) -> SimulationResult:
+    def _run_dip_sd(self) -> SimulationResult:
         self._schedule_request_arrivals()
         self.events.clear()
         dip_config = self.config["dip_sd"]
@@ -238,19 +237,7 @@ class Simulator:
                 server_available_ms = now_ms
                 continue
 
-            if self.spec.name == "dip_sd":
-                plan = optimize_dip_sd(
-                    self._build_dip_sd_problem(active, epoch_index)
-                )
-            else:
-                plan = build_fixed_epoch_plan(
-                    active,
-                    batch_count=int(dip_config["batch_count"]),
-                    draft_length=int(dip_config["draft_length"]),
-                    min_draft_length=int(dip_config["min_draft_length"]),
-                    max_draft_length=int(dip_config["max_draft_length"]),
-                    max_batch_size=int(dip_config["max_batch_size"]),
-                )
+            plan = optimize_dip_sd(self._build_dip_sd_problem(active, epoch_index))
             self._trace.append(
                 {
                     "event": "dip_sd_epoch_plan",

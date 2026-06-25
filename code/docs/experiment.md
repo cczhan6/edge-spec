@@ -264,7 +264,7 @@ DSI-style 持续乐观起草、同请求多位置并行验证和 bonus 匹配重
 | `target_only` | 边缘自回归基线 | decode-ready 请求由单个 target 服务资源自回归生成 |
 | `server_only_linear` | Server-only SD-Linear | 服务器侧线性 draft 后 target verify，draft/target 使用独立逻辑资源，无端边通信 |
 | `specedge_linear` | SpecEdge-Linear | 端侧线性 draft、端边往返、server batch validation、proactive continuation |
-| `dip_sd` | DiP-SD online adaptation | 本地线性 draft、ordered batch verify、epoch barrier、确定性在线分组/草稿长度优化 |
+| `dip_sd` | DiP-SD paper method | 本地线性 draft、ordered batch verify、epoch barrier、batch-count、用户分组和 per-user draft length 联合优化 |
 | `server_only_tree` | Server-only SD-Tree | 服务器侧 SpecExec-style tree draft 后 target verify，无端边通信、无 proactive |
 | `specedge_tree` | SpecEdge-Tree | 端侧 SpecExec-style tree draft、server batch validation、proactive continuation |
 
@@ -294,10 +294,11 @@ SD baseline 的具体解释：
   validate 后立即开始 proactive continuation 和 pipeline-aware scheduling，但候选结构
   强制为线性段。`static` batch 等满 `server_batch_size`，`dynamic` 收集当前已到达的
   validate 请求后立即启动 batch。
-- `dip_sd`：按 DiP-SD 论文语义实现在线 ordered-batch 流水线。请求固定在 origin device
-  本地线性 draft，每个 epoch 按确定性分组有序上传、server batch verify、下发结果并同步；
-  新到达请求只在 epoch barrier 进入活跃 cohort。优化器只使用配置/历史估计，不读取未来
-  acceptance 或未来 arrival。
+- `dip_sd`：按 DiP-SD 论文语义实现 ordered-batch 流水线和联合优化。请求固定在 origin
+  device 本地线性 draft；每个 epoch 构造活跃 cohort，优化 batch count、用户到 batch
+  的 assignment 和每用户 draft length，然后按有序 batch 上传、server batch verify、下发
+  结果并同步。新到达请求只在 epoch barrier 进入活跃 cohort。优化器只使用配置/历史估计，
+  不读取未来 acceptance 或未来 arrival。
 - `server_only_tree`：对应 SpecEdge-style server-only tree baseline。服务器侧使用固定
   1.5B 级 `medium` drafter 交替执行 tree draft 和 target verify，默认使用官方风格
   target `cuda:0`、draft `cuda:1` 的独立逻辑资源表示。它不进入 global batch，不产生

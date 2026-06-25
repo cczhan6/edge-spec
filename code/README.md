@@ -36,7 +36,7 @@
 | `target_only` | 自回归基线 | decode-ready 请求由单个边缘 target 服务资源完整生成；decode-only 口径下无通信。 |
 | `server_only_linear` | Server-only SD-Linear | 服务器侧线性 draft + target verify，draft/target 使用独立逻辑资源，无端边通信。 |
 | `specedge_linear` | SpecEdge-Linear | 端侧线性 draft、端边往返、server batch validation、proactive continuation。 |
-| `dip_sd` | DiP-SD | 固定流水线加确定性在线优化器，按 epoch 有序 batch verify。 |
+| `dip_sd` | DiP-SD | 论文级 batch-count、用户分组和 per-user draft length 联合优化，按 epoch 有序 batch verify。 |
 | `server_only_tree` | Server-only SD-Tree | 服务器侧 SpecExec-style 树形 draft + target verify，无 proactive、无端边通信。 |
 | `specedge_tree` | SpecEdge-Tree | 端侧 SpecExec-style 树形 draft、server batch validation、proactive continuation。 |
 | `wo_async` | 组件消融 | 去掉持续乐观起草。 |

@@ -166,6 +166,9 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError("server_only.max_budget must be at least max_beam_len")
     dip_sd = config.get("dip_sd", {})
     if dip_sd:
+        optimizer = str(dip_sd.get("optimizer", "paper_exact"))
+        if optimizer != "paper_exact":
+            raise ValueError("dip_sd.optimizer must be paper_exact")
         for key in (
             "batch_count",
             "draft_length",

@@ -449,7 +449,7 @@ def category_rows(result: SimulationResult, num_devices: int) -> list[dict[str, 
 def enrich_comparisons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_method = {row["method"]: row for row in rows}
     autoregressive = by_method.get("target_only")
-    dip_sd = _first_available(by_method, "dip_sd", "dip_sd_greedy", "sync_batch_sd")
+    dip_sd = _first_available(by_method, "dip_sd", "sync_batch_sd")
     specedge_linear = _first_available(by_method, "specedge_linear", "SpecEdge")
     specedge_tree = _first_available(by_method, "specedge_tree", "SpecEdge")
     server_only_linear = _first_available(by_method, "server_only_linear", "server_only")

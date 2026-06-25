@@ -245,14 +245,14 @@ pytest -q
 
 **Completion conditions**
 
-- [ ] Re-read the DiP-SD paper and current `src/dip_sd.py`, simulator path,
+- [x] Re-read the DiP-SD paper and current `src/dip_sd.py`, simulator path,
       method registry, config, tests, and M5/M6 commits.
-- [ ] Create `docs/dip_sd_reproduction_spec.md`.
-- [ ] Map paper symbols, variables, formulas, constraints, and Algorithm 1 to
+- [x] Create `docs/dip_sd_reproduction_spec.md`.
+- [x] Map paper symbols, variables, formulas, constraints, and Algorithm 1 to
       planned code functions.
-- [ ] Mark current implementation status for every paper requirement.
-- [ ] Record acceptance-estimate, fixed-cohort, and no-future-oracle rules.
-- [ ] Update status and commit documentation only.
+- [x] Mark current implementation status for every paper requirement.
+- [x] Record acceptance-estimate, fixed-cohort, and no-future-oracle rules.
+- [x] Update status and commit documentation only.
 
 **Verification commands**
 
@@ -265,14 +265,14 @@ pytest -q tests/test_dip_sd.py
 
 **Completion conditions**
 
-- [ ] Replace heuristic `dip_sd` planning with the paper optimizer.
-- [ ] Implement batch-count scan, exact assignment subproblem, exact/equivalent
+- [x] Replace heuristic `dip_sd` planning with the paper optimizer.
+- [x] Implement batch-count scan, exact assignment subproblem, exact/equivalent
       draft-length subproblem, Dinkelbach/equivalent fractional objective, and
       deterministic tie-breaking.
-- [ ] Add feasibility diagnostics and explicit errors for infeasible input.
-- [ ] Ensure the optimizer cannot read future realized acceptance.
-- [ ] Add optimizer tests, including tiny-case brute-force oracle tests.
-- [ ] Update status and commit.
+- [x] Add feasibility diagnostics and explicit errors for infeasible input.
+- [x] Ensure the optimizer cannot read future realized acceptance.
+- [x] Add optimizer tests, including tiny-case brute-force oracle tests.
+- [x] Update status and commit.
 
 **Verification commands**
 
@@ -305,14 +305,14 @@ pytest -q
 
 **Completion conditions**
 
-- [ ] Public method registry exposes `dip_sd` only for the original paper method.
-- [ ] Remove `dip_sd_greedy`, `dip_sd_static`, and `dip_sd_heuristic` from
+- [x] Public method registry exposes `dip_sd` only for the original paper method.
+- [x] Remove `dip_sd_greedy`, `dip_sd_static`, and `dip_sd_heuristic` from
       default/public method paths.
-- [ ] Update README, default config, contract, status, semantic audit,
+- [x] Update README, default config, contract, status, semantic audit,
       experiment docs, run scripts, and verification script.
-- [ ] Run the baseline verification script, full pytest, and diff check.
-- [ ] Record remaining paper deviations, if any.
-- [ ] Update status and commit.
+- [x] Run the baseline verification script, full pytest, and diff check.
+- [x] Record remaining paper deviations, if any.
+- [x] Update status and commit.
 
 **Verification commands**
 

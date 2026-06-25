@@ -22,3 +22,15 @@ if grep -Rni \
     echo "Unexpected prefill execution code found"
     exit 1
 fi
+
+if grep -Rni \
+  --exclude-dir=.git \
+  --exclude-dir=__pycache__ \
+  --exclude='*.md' \
+  --exclude='*.pyc' \
+  --exclude='verify_baseline_rebuild.sh' \
+  -E 'dip_sd_greedy|dip_sd_static|dip_sd_heuristic' \
+  src configs scripts; then
+    echo "Unexpected public DiP-SD static/greedy method found"
+    exit 1
+fi

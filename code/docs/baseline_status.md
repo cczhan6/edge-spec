@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M17 complete
+Current milestone: M18 complete
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -17,7 +17,8 @@ Current milestone: M17 complete
 | M10 Regression and cleanup | complete | `46065c6` | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 137 passed; method-specific pytest 49 passed; no prefill grep matches |
 | M15 DiP-SD paper-to-code reproduction spec | complete | `f052b0e` | `git diff --check` -> passed; `pytest -q tests/test_dip_sd.py` -> 9 passed |
 | M16 Full DiP-SD paper optimizer | complete | `07bc84c` | `pytest -q tests/test_dip_sd.py` -> 16 passed; `pytest -q` -> 144 passed |
-| M17 DiP-SD optimizer simulation integration | complete | this commit | `pytest -q tests/test_dip_sd.py` -> 24 passed; `pytest -q` -> 152 passed |
+| M17 DiP-SD optimizer simulation integration | complete | `a1fbd02` | `pytest -q tests/test_dip_sd.py` -> 24 passed; `pytest -q` -> 152 passed |
+| M18 DiP-SD public interface cleanup | complete | this commit | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 151 passed; method-specific pytest 63 passed; static checks passed; `pytest -q` -> 151 passed; `git diff --check` -> passed |
 
 ## M15 DiP-SD Paper-To-Code Reproduction Spec
 
@@ -167,6 +168,67 @@ Current milestone: M17 complete
   span. Full epoch wall-clock additionally includes warm-up/drain and epoch
   barrier time, which is intentionally treated as bounded online-adaptation
   overhead rather than a paper optimizer objective term.
+
+## M18 DiP-SD Public Interface Cleanup
+
+### Completion Conditions
+
+- Public method registry exposes canonical `dip_sd` only for the DiP-SD paper
+  method.
+- Removed public `dip_sd_greedy` method registration and simulator fixed-path
+  branch.
+- Removed `build_fixed_epoch_plan` and `optimize_epoch_plan` static/compatibility
+  public helpers from `src/dip_sd.py`.
+- Changed `configs/default.yaml` to `dip_sd.optimizer: paper_exact`.
+- Added config validation rejecting non-`paper_exact` DiP-SD optimizers.
+- Removed `dip_sd_greedy` metrics fallback.
+- Updated README, default config, baseline contract, implementation plan,
+  semantic audit, DiP-SD reproduction spec, experiment docs, and verification
+  script.
+- Extended the verification script to reject public static/greedy DiP-SD method
+  names in `src`, `configs`, and `scripts`.
+- Updated DiP-SD tests to assert `dip_sd_greedy` is unsupported and static
+  optimizer names are rejected.
+
+### Changed Files
+
+- Updated `README.md`.
+- Updated `configs/default.yaml`.
+- Updated `docs/baseline_contract.md`.
+- Updated `docs/baseline_implementation_plan.md`.
+- Updated `docs/baseline_semantic_audit.md`.
+- Updated `docs/dip_sd_reproduction_spec.md`.
+- Updated `docs/experiment.md`.
+- Updated `scripts/verify_baseline_rebuild.sh`.
+- Updated `src/config.py`.
+- Updated `src/dip_sd.py`.
+- Updated `src/methods.py`.
+- Updated `src/metrics.py`.
+- Updated `src/simulator.py`.
+- Updated `tests/test_dip_sd.py`.
+
+### Commands And Results
+
+- `pytest -q tests/test_dip_sd.py` -> 23 passed.
+- Static public DiP-SD method grep over `src configs scripts` with
+  `verify_baseline_rebuild.sh` excluded -> no matches.
+- `bash scripts/verify_baseline_rebuild.sh` -> full pytest 151 passed;
+  method-specific pytest 63 passed; no-prefill static check passed; public
+  static/greedy DiP-SD method-name static check passed.
+- `pytest -q` -> 151 passed.
+- `git diff --check` -> passed.
+
+### Deviations Remaining
+
+- The `dip_sd` simulator remains the documented online epoch-barrier adaptation
+  around the paper's fixed active-cohort optimization horizon.
+- DiP-SD trace-span validation compares optimizer `S` to ordered
+  verification-stage span; full epoch wall-clock also includes warm-up/drain and
+  barrier overhead.
+- Server-only `batch_size > 1` remains a separate unresolved semantic issue
+  outside the DiP-SD cleanup.
+- Legacy aliases remain compatibility paths and should not be used for final
+  paper result labels.
 
 ## M0 Audit Existing Code vs Contract
 

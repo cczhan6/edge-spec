@@ -11,9 +11,17 @@ public method name `dip_sd` must mean the original paper method. Static,
 round-robin, greedy, or heuristic synchronized pipelines are not acceptable
 substitutes.
 
+M18 status update: canonical `dip_sd` now uses `optimize_dip_sd` with paper
+variables, exact bounded assignment and draft-length subproblems, Dinkelbach
+fractional objective updates, and optimizer-controlled event simulation. Public
+`dip_sd_greedy`, static, and heuristic method names are not registered.
+
 ## 1. Paper-to-code Matrix
 
-| Paper item | Meaning | Current code | Status | Planned implementation |
+This matrix records the M15 gap analysis. The current M18 implementation status
+is summarized in Section 7.
+
+| Paper item | Meaning | M15 code | M15 status | Planned implementation |
 | --- | --- | --- | --- | --- |
 | `M`, `mathcal{M}={1,...,M}` | Fixed active user/request cohort in one optimization horizon | `_run_dip_sd_greedy` uses online `active` list and epoch admission | PARTIAL | `DipSDProblem.users` built from a fixed cohort; online wrapper, if added later, must be `dip_sd_online` |
 | `N`, `mathcal{N}={1,...,N}`, `N in {2,...,M}` | Number of ordered verification batches/stages | `optimize_epoch_plan(max_batch_count=...)` scans bounded counts; fixed path accepts configured count | PARTIAL | `scan_batch_counts(problem)` enumerates all feasible `N` in the paper range, with deterministic tie-breaking |
@@ -91,7 +99,7 @@ Planned functions:
 - `expected_useful_tokens(alpha: float, draft_length: int) -> float`
 - `total_expected_useful_tokens(problem: DipSDProblem, lengths: Mapping[int, int]) -> float`
 
-Current code status: `_expected_useful_tokens` is reusable after renaming/export
+M15 code status: `_expected_useful_tokens` is reusable after renaming/export
 and adding tests.
 
 ### Compute and latency primitives
@@ -115,7 +123,7 @@ Planned functions:
 - `user_draft_latency(user: DipSDUser, draft_length: int) -> float`
 - `batch_verify_latency(problem: DipSDProblem, batch: DipSDBatchPlan) -> float`
 
-Current code status: missing from optimizer. Simulator has separate analytical
+M15 code status: missing from optimizer. Simulator has separate analytical
 latency helpers, but the optimizer does not receive or model paper parameters.
 
 ### Assignment and batch aggregation
@@ -137,7 +145,7 @@ Planned functions:
 - `derive_batch_auxiliaries(problem, assignment, lengths)`
 - `assignment_complete_and_disjoint(problem, assignment)`
 
-Current code status: fixed partition and heuristic assignment are not sufficient.
+M15 code status: fixed partition and heuristic assignment are not sufficient.
 
 ### Latency coupling and pipeline span
 
@@ -159,7 +167,7 @@ Planned functions:
 - `objective(problem, plan)`
 - `pipeline_feasible(problem, plan)`
 
-Current code status: the event simulator enforces some readiness timing, but the
+M15 code status: the event simulator enforces some readiness timing, but the
 optimizer's `_pipeline_span` is not paper-equivalent.
 
 ### Memory constraints
@@ -178,7 +186,7 @@ Planned functions:
 - `target_kv_memory(model: DipSDModelProfile, batch_size: int, max_prefix_length: int) -> float`
 - `batch_memory_feasible(problem, batch_aux)`
 
-Current code status: missing.
+M15 code status: missing.
 
 ### Bounds
 
@@ -279,54 +287,39 @@ Decode-only scope remains unchanged:
 - actual verification still uses the real/fake target model and must remain
   lossless against target-only greedy decoding.
 
-## 7. Gap List
+## 7. M18 Implementation Status
 
-### Reusable current pieces
+Resolved:
 
-- `src.dip_sd._expected_useful_tokens` matches paper formula (1).
-- `DipSDEpochPlan` concept can evolve into a richer `DipSDPlan`.
-- Simulator draft/upload/batch-verify/download/state-update event skeleton can
-  be reused after optimizer integration.
-- Existing tests for sync-before-redraft and greedy equality remain useful as
-  regression tests.
+- `optimize_dip_sd(problem)` implements batch-count scan over feasible `N`.
+- `solve_assignment_subproblem` solves the fixed-length assignment problem by
+  exact bounded enumeration for configured active cohorts.
+- `solve_draft_length_subproblem` solves the fixed-assignment draft-length
+  problem by exact bounded enumeration with Dinkelbach-equivalent fractional
+  objective updates.
+- `evaluate_plan` computes expected useful tokens, batch ready times,
+  verification times, stage durations, memory usage, and `R=U/S`.
+- `Simulator._run_dip_sd` passes current prefix length, communication latency,
+  profiled draft latency, target verify startup, memory cap, and causal
+  acceptance estimates into the optimizer.
+- The event trace records optimizer assignment, draft lengths, ready times,
+  verify times, stage durations, objective, and diagnostics.
+- `dip_sd_greedy`, `dip_sd_static`, and `dip_sd_heuristic` are not public method
+  names. `dip_sd.optimizer` must be `paper_exact`.
+- Tests cover optimizer feasibility, complete/disjoint assignment, non-empty
+  batches, bounds, deterministic behavior, manual objective, brute-force
+  tiny-case agreement, no future acceptance field, optimizer-controlled runtime
+  assignment/draft lengths, slow-member blocking, batch overlap, ordered verify,
+  redraft barrier, multi-request batch verify, trace span, and greedy equality.
 
-### Must rewrite or replace
+Remaining limitations:
 
-- `optimize_epoch_plan`: replace heuristic search/greedy assignment with
-  paper-equivalent optimization.
-- `_assign_for_lengths`: remove from canonical path; it is greedy and fails the
-  paper assignment subproblem.
-- `_pipeline_span` and `_batch_span`: replace with paper equations for
-  readiness, verification, stage duration, memory feasibility, and span.
-- `Simulator._run_dip_sd_greedy`: rename/refactor so canonical `dip_sd` runs the
-  paper plan. The public `dip_sd_greedy` method must be removed from formal
-  registry in M18.
-- Config `dip_sd.optimizer: deterministic_search`: replace with explicit paper
-  solver settings and profile parameters.
-
-### Static/heuristic substitute pieces
-
-- `build_fixed_epoch_plan` is not a valid public `dip_sd` implementation.
-- `dip_sd_greedy` is not a valid public method under the current project goal.
-- Existing deterministic search is a heuristic and must not be reported as
-  DiP-SD.
-
-### Optimizer not connected to simulation
-
-- Current optimizer does not receive prefix lengths, communication latency,
-  draft model cost parameters, target verification parameters, or memory cap.
-- Current event trace records optimizer objective but does not guarantee trace
-  span matches the optimizer's paper model.
-
-### Test gaps
-
-- No optimizer feasibility test over paper variables.
-- No complete/disjoint assignment test over `x_mn`.
-- No non-empty batch test for each selected `N`.
-- No draft-length bound test for all users.
-- No independent brute-force tiny-case oracle.
-- No paper objective/manual-case test.
-- No no-future-acceptance test at optimizer boundary.
-- No event trace test proving simulator uses optimizer assignment and per-user
-  draft lengths.
-- No trace-span-vs-optimizer-span test.
+- The simulator is an online epoch-barrier wrapper around the paper's fixed
+  active-cohort optimization horizon. New arrivals enter only at epoch barriers.
+- The event trace compares optimizer `S` to the ordered verification-stage span.
+  Full epoch wall-clock additionally includes warm-up/drain and barrier
+  overhead.
+- Cost coefficients are currently represented through deterministic analytical
+  latency parameters. More realistic deployments should calibrate
+  `draft_latency_scale`, `target_latency_scale`, and model profiles from
+  measured hardware data.

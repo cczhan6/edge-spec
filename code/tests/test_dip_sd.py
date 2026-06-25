@@ -7,11 +7,10 @@ from src.dip_sd import (
     DipSDModelProfile,
     DipSDProblem,
     DipSDUser,
-    build_fixed_epoch_plan,
     evaluate_plan,
     optimize_dip_sd,
-    optimize_epoch_plan,
 )
+from src.config import validate_config
 from src.methods import get_method_spec
 from src.simulator import Simulator
 from tests.common import accepting_model_runner, rejecting_model_runner, small_config
@@ -21,49 +20,19 @@ class DipSDTest(unittest.TestCase):
     def test_dip_sd_methods_are_registered(self) -> None:
         config, _, _ = small_config(num_requests=1, output_len=4)
 
-        greedy = get_method_spec("dip_sd_greedy", config)
         optimized = get_method_spec("dip_sd", config)
 
-        self.assertEqual(greedy.runtime, "dip_sd")
-        self.assertEqual(greedy.candidate_strategy, "linear")
         self.assertEqual(optimized.runtime, "dip_sd")
         self.assertEqual(optimized.candidate_strategy, "linear")
+        with self.assertRaises(ValueError):
+            get_method_spec("dip_sd_greedy", config)
 
-    def test_fixed_epoch_partition_complete_disjoint_non_empty(self) -> None:
-        plan = build_fixed_epoch_plan(
-            [3, 1, 2, 0],
-            batch_count=2,
-            draft_length=2,
-            min_draft_length=1,
-            max_draft_length=4,
-            max_batch_size=3,
-        )
+    def test_dip_sd_rejects_static_optimizer_names(self) -> None:
+        config, _, _ = small_config(num_requests=1, output_len=4)
+        config["dip_sd"]["optimizer"] = "deterministic_search"
 
-        flattened = [request_id for batch in plan.batches for request_id in batch]
-        self.assertEqual(sorted(flattened), [0, 1, 2, 3])
-        self.assertEqual(len(flattened), len(set(flattened)))
-        self.assertTrue(all(batch for batch in plan.batches))
-        self.assertEqual(set(plan.draft_lengths), {0, 1, 2, 3})
-        self.assertTrue(all(length == 2 for length in plan.draft_lengths.values()))
-
-    def test_dip_sd_batch_order_is_fixed_cyclic(self) -> None:
-        config, model_runner, workload = small_config(num_requests=3, output_len=4)
-        config["dip_sd"]["batch_count"] = 2
-        config["dip_sd"]["draft_length"] = 1
-
-        result = Simulator(
-            config,
-            model_runner,
-            workload,
-            "combined_strong_heterogeneous",
-            "dip_sd_greedy",
-        ).run()
-
-        verify_events = [
-            event for event in result.event_trace if event["event"] == "dip_sd_batch_verify"
-        ]
-        first_epoch = [event for event in verify_events if event["epoch"] == 0]
-        self.assertEqual([event["batch_index"] for event in first_epoch], [0, 1])
+        with self.assertRaisesRegex(ValueError, "paper_exact"):
+            validate_config(config)
 
     def test_optimizer_is_deterministic(self) -> None:
         problem = paper_problem()
@@ -167,21 +136,23 @@ class DipSDTest(unittest.TestCase):
         self.assertNotIn("future_acceptance", DipSDProblem.__dataclass_fields__)
 
     def test_optimizer_uses_estimated_acceptance_not_realized_future_acceptance(self) -> None:
-        low = optimize_epoch_plan(
-            [0],
-            acceptance_estimates={0: 0.1},
-            max_batch_count=1,
-            min_draft_length=1,
-            max_draft_length=4,
-            max_batch_size=1,
+        low = optimize_dip_sd(
+            paper_problem(
+                users=(paper_user(0, alpha=0.1),),
+                min_draft_length=1,
+                max_draft_length=4,
+                max_batch_count=1,
+                max_batch_size=1,
+            )
         )
-        high = optimize_epoch_plan(
-            [0],
-            acceptance_estimates={0: 0.95},
-            max_batch_count=1,
-            min_draft_length=1,
-            max_draft_length=4,
-            max_batch_size=1,
+        high = optimize_dip_sd(
+            paper_problem(
+                users=(paper_user(0, alpha=0.95),),
+                min_draft_length=1,
+                max_draft_length=4,
+                max_batch_count=1,
+                max_batch_size=1,
+            )
         )
 
         self.assertLessEqual(low.draft_lengths[0], high.draft_lengths[0])
@@ -415,7 +386,7 @@ class DipSDTest(unittest.TestCase):
             accepting_model_runner(),
             workload,
             "combined_strong_heterogeneous",
-            "dip_sd_greedy",
+            "dip_sd",
         ).run()
 
         drafts = [event for event in result.event_trace if event["event"] == "dip_sd_draft"]
@@ -440,7 +411,7 @@ class DipSDTest(unittest.TestCase):
             model_runner,
             workload,
             "combined_strong_heterogeneous",
-            "dip_sd_greedy",
+            "dip_sd",
         ).run()
 
         admissions = [event for event in result.event_trace if event["event"] == "dip_sd_admit"]
@@ -471,7 +442,7 @@ class DipSDTest(unittest.TestCase):
             accepting_model_runner(),
             workload,
             "combined_strong_heterogeneous",
-            "dip_sd_greedy",
+            "dip_sd",
         ).run()
 
         for request in result.requests:
