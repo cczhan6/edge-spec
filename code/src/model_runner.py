@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence, cast
 
 from src.tree_drafting import DraftTreePlan
 
@@ -384,7 +384,7 @@ class HuggingFaceModelRunner:
         )
 
     def verify(self, prefix_ids: Sequence[int], draft_ids: Sequence[int]) -> VerificationResult:
-        return self.verify_batch(
+        return self._verify_equal_length_batch(
             [SemanticVerifyInput(list(prefix_ids), list(draft_ids))]
         )[0]
 
@@ -400,29 +400,57 @@ class HuggingFaceModelRunner:
     def verify_batch(self, requests: Sequence[SemanticVerifyInput]) -> list[VerificationResult]:
         if not requests:
             raise ValueError("verify batch must not be empty")
+        groups: dict[tuple[int, int], list[tuple[int, SemanticVerifyInput]]] = {}
+        for index, item in enumerate(requests):
+            key = (len(item.prefix_ids), len(item.draft_ids))
+            groups.setdefault(key, []).append((index, item))
+
+        ordered_results: list[VerificationResult | None] = [None] * len(requests)
+        for group in groups.values():
+            group_results = self._verify_equal_length_batch([item for _, item in group])
+            for (original_index, _), result in zip(group, group_results):
+                ordered_results[original_index] = result
+
+        return [cast(VerificationResult, result) for result in ordered_results]
+
+    def _verify_equal_length_batch(
+        self,
+        requests: Sequence[SemanticVerifyInput],
+    ) -> list[VerificationResult]:
+        if not requests:
+            raise ValueError("verify batch must not be empty")
+        prefix_lengths = {len(item.prefix_ids) for item in requests}
+        draft_lengths = {len(item.draft_ids) for item in requests}
+        if len(prefix_lengths) != 1 or len(draft_lengths) != 1:
+            raise ValueError("equal-length verification requires one prefix and draft length")
+
         torch = self.torch
         sequences = [item.prefix_ids + item.draft_ids for item in requests]
-        max_len = max(len(sequence) for sequence in sequences)
-        input_ids = torch.full(
-            (len(sequences), max_len),
-            int(self.pad_token_id),
+        sequence_len = len(sequences[0])
+        input_ids = torch.tensor(
+            sequences,
             dtype=torch.long,
             device=self.target_device,
         )
-        attention_mask = torch.zeros_like(input_ids)
-        for row, sequence in enumerate(sequences):
-            input_ids[row, : len(sequence)] = torch.tensor(
-                sequence,
-                dtype=torch.long,
-                device=self.target_device,
-            )
-            attention_mask[row, : len(sequence)] = 1
+        attention_mask = torch.full(
+            (len(sequences), sequence_len),
+            1,
+            dtype=torch.long,
+            device=self.target_device,
+        )
         with torch.inference_mode():
             logits = self.target_model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 use_cache=False,
             ).logits
+        return self._verify_from_logits(logits, requests)
+
+    def _verify_from_logits(
+        self,
+        logits: Any,
+        requests: Sequence[SemanticVerifyInput],
+    ) -> list[VerificationResult]:
         results: list[VerificationResult] = []
         for row, item in enumerate(requests):
             emitted: list[int] = []

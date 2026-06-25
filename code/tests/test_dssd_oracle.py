@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from unittest.mock import patch
 
 from src.config import load_config
@@ -17,6 +17,12 @@ from src.model_runner import (
     make_linear_draft_tree,
 )
 from src.tree_drafting import SpecExecDraftTreeStrategy
+
+
+TARGET_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+SMALL_DRAFTER_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
+MEDIUM_DRAFTER_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+LARGE_DRAFTER_NAME = "Qwen/Qwen2.5-3B-Instruct"
 
 
 class _FakeScalar:
@@ -36,16 +42,17 @@ class _FakeVector:
 
 
 class _FakeSelectedLogits:
-    def __init__(self, key=None):
+    def __init__(self, key=None, token_id=7):
         self.key = key
+        self.token_id = token_id
 
     def argmax(self, *, dim):
-        return _FakeScalar(7)
+        return _FakeScalar(self.token_id)
 
     def topk(self, k):
         return (
             _FakeVector([-0.1 * index for index in range(k)]),
-            _FakeVector([7 + index for index in range(k)]),
+            _FakeVector([self.token_id + index for index in range(k)]),
         )
 
 
@@ -55,6 +62,54 @@ class _FakeLogits:
     def __getitem__(self, key):
         self.keys.append(key)
         return _FakeSelectedLogits(key)
+
+
+class _ContextualLogits:
+    def __init__(
+        self,
+        input_ids,
+        attention_mask,
+        target_token_fn,
+        corrupt_token_fn=None,
+    ):
+        self.input_ids = [list(row) for row in input_ids]
+        self.attention_mask = (
+            [list(row) for row in attention_mask]
+            if attention_mask is not None
+            else [[1 for _ in row] for row in input_ids]
+        )
+        self.target_token_fn = target_token_fn
+        self.corrupt_token_fn = corrupt_token_fn
+        self.real_lengths = [
+            sum(1 for value in row if value)
+            for row in self.attention_mask
+        ]
+        self.max_len = max((len(row) for row in self.input_ids), default=0)
+        self.has_mixed_lengths = len(set(self.real_lengths)) > 1
+
+    def __getitem__(self, key):
+        _FakeLogits.keys.append(key)
+        row, position, _ = key
+        if isinstance(row, slice):
+            row = 0
+        if isinstance(position, slice):
+            position = self.real_lengths[row] - 1
+        context = self.input_ids[row][: position + 1]
+        token_id = self.target_token_fn(context)
+        if self.has_mixed_lengths and self.real_lengths[row] < self.max_len:
+            if self.corrupt_token_fn is None:
+                corrupt_token = 31 if position == self.real_lengths[row] - 1 else None
+            else:
+                corrupt_token = self.corrupt_token_fn(
+                    context,
+                    row,
+                    position,
+                    self.real_lengths[row],
+                    self.max_len,
+                )
+            if corrupt_token is not None:
+                token_id = corrupt_token
+        return _FakeSelectedLogits(key, token_id)
 
 
 class _FakeTensor:
@@ -102,7 +157,9 @@ class _FakeModel:
 
     def __call__(self, **kwargs):
         self.calls.append(kwargs)
-        return types.SimpleNamespace(logits=_FakeLogits(), past_key_values=object())
+        logits_factory = _FakeModelFactory.logits_factories.get(self.name)
+        logits = logits_factory(kwargs) if logits_factory is not None else _FakeLogits()
+        return types.SimpleNamespace(logits=logits, past_key_values=object())
 
 
 class _FakeModelFactory:
@@ -111,6 +168,7 @@ class _FakeModelFactory:
     fail_first_online_for = set()
     vocab_sizes = {}
     dtypes = {}
+    logits_factories = {}
 
     @classmethod
     def from_pretrained(cls, name, **kwargs):
@@ -136,6 +194,7 @@ _FakeRemoteProtocolError.__module__ = "httpx"
 class _FakeTokenizer:
     calls = []
     fail_first_online_for = set()
+    vocab_size = 32
     eos_token_id = 9
     pad_token_id = 0
     eos_token = "<eos>"
@@ -153,10 +212,10 @@ class _FakeTokenizer:
         return cls()
 
     def __len__(self):
-        return 32
+        return self.vocab_size
 
     def get_vocab(self):
-        return {str(index): index for index in range(32)}
+        return {str(index): index for index in range(self.vocab_size)}
 
     def encode(self, prompt):
         return [index + 1 for index, _ in enumerate(prompt.split())]
@@ -188,6 +247,46 @@ def _fake_modules():
     return {"torch": torch, "transformers": transformers}
 
 
+def _default_target_token(context):
+    return 10 + ((sum(context) + len(context) * 7) % 20)
+
+
+@contextmanager
+def _contextual_huggingface_runner(
+    token_by_context=None,
+    *,
+    vocab_size=64,
+    corrupt_token_fn=None,
+):
+    mapping = {tuple(key): value for key, value in (token_by_context or {}).items()}
+
+    def target_token(context):
+        return int(mapping.get(tuple(context), _default_target_token(context)))
+
+    modules = _fake_modules()
+    _FakeTokenizer.vocab_size = vocab_size
+    _FakeModelFactory.vocab_sizes = {
+        TARGET_MODEL_NAME: vocab_size,
+        SMALL_DRAFTER_NAME: vocab_size,
+        MEDIUM_DRAFTER_NAME: vocab_size,
+        LARGE_DRAFTER_NAME: vocab_size,
+    }
+    _FakeModelFactory.logits_factories = {
+        TARGET_MODEL_NAME: lambda kwargs: _ContextualLogits(
+            kwargs["input_ids"].data,
+            kwargs.get("attention_mask").data if kwargs.get("attention_mask") else None,
+            target_token,
+            corrupt_token_fn,
+        )
+    }
+    try:
+        with patch.dict(sys.modules, modules):
+            yield HuggingFaceModelRunner(load_config("configs/default.yaml"))
+    finally:
+        _FakeModelFactory.logits_factories = {}
+        _FakeTokenizer.vocab_size = 32
+
+
 class HuggingFaceModelRunnerTest(unittest.TestCase):
     def setUp(self) -> None:
         _FakeModelFactory.models = {}
@@ -195,22 +294,68 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
         _FakeModelFactory.fail_first_online_for = set()
         _FakeModelFactory.vocab_sizes = {}
         _FakeModelFactory.dtypes = {}
+        _FakeModelFactory.logits_factories = {}
         _FakeTokenizer.calls = []
         _FakeTokenizer.fail_first_online_for = set()
+        _FakeTokenizer.vocab_size = 32
         _FakeLogits.keys = []
+
+    def assertVerificationEqual(
+        self,
+        actual,
+        expected,
+        *,
+        eos_token_id=None,
+    ) -> None:
+        self.assertEqual(actual.accepted_count, expected.accepted_count)
+        self.assertEqual(
+            actual.committed_tokens[: actual.accepted_count],
+            expected.committed_tokens[: expected.accepted_count],
+        )
+        self.assertEqual(actual.correction_token, expected.correction_token)
+        self.assertEqual(actual.bonus_token, expected.bonus_token)
+        self.assertEqual(actual.committed_tokens, expected.committed_tokens)
+        self.assertEqual(actual.emitted_ids, expected.emitted_ids)
+        self.assertEqual(actual.rejected, expected.rejected)
+        if eos_token_id is not None:
+            self.assertEqual(
+                bool(
+                    actual.committed_tokens
+                    and actual.committed_tokens[-1] == eos_token_id
+                ),
+                bool(
+                    expected.committed_tokens
+                    and expected.committed_tokens[-1] == eos_token_id
+                ),
+            )
+
+    def assertBatchMatchesIndividualVerify(self, model_runner, requests) -> None:
+        individual_results = [
+            model_runner.verify(request.prefix_ids, request.draft_ids)
+            for request in requests
+        ]
+        batch_results = model_runner.verify_batch(requests)
+
+        self.assertEqual(len(batch_results), len(individual_results))
+        for actual, expected in zip(batch_results, individual_results):
+            self.assertVerificationEqual(
+                actual,
+                expected,
+                eos_token_id=model_runner.eos_token_id,
+            )
 
     def test_draft_and_target_only_use_kv_cache_while_verify_batch_does_not(self) -> None:
         with patch.dict(sys.modules, _fake_modules()):
             model_runner = HuggingFaceModelRunner(load_config("configs/default.yaml"))
             draft = model_runner.draft("small", [1, 2], 3)
-            small = _FakeModelFactory.models["Qwen/Qwen2.5-0.5B-Instruct"]
+            small = _FakeModelFactory.models[SMALL_DRAFTER_NAME]
             self.assertEqual(draft, [7, 7, 7])
             self.assertEqual(len(small.calls), 3)
             self.assertTrue(all(call["use_cache"] is True for call in small.calls))
             self.assertNotIn("past_key_values", small.calls[0])
             self.assertIn("past_key_values", small.calls[1])
 
-            target = _FakeModelFactory.models["Qwen/Qwen2.5-7B-Instruct"]
+            target = _FakeModelFactory.models[TARGET_MODEL_NAME]
             results = model_runner.verify_batch(
                 [
                     SemanticVerifyInput([1], [7, 7]),
@@ -218,12 +363,154 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
                 ]
             )
             self.assertEqual([result.accepted_count for result in results], [2, 1])
-            self.assertEqual(len(target.calls), 1)
-            self.assertFalse(target.calls[0]["use_cache"])
-            self.assertEqual(target.calls[0]["input_ids"].shape, (2, 4))
+            self.assertEqual(len(target.calls), 2)
+            self.assertTrue(all(call["use_cache"] is False for call in target.calls))
+            self.assertEqual(
+                [call["input_ids"].shape for call in target.calls],
+                [(1, 3), (1, 4)],
+            )
 
+            verify_call_count = len(target.calls)
             self.assertEqual(model_runner.target_only([1, 2], 2), [7, 7])
-            self.assertTrue(all(call["use_cache"] is True for call in target.calls[1:]))
+            self.assertTrue(
+                all(
+                    call["use_cache"] is True
+                    for call in target.calls[verify_call_count:]
+                )
+            )
+
+    def test_verify_batch_mixed_lengths_matches_individual_verify(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            prefix = [1, 2]
+            first = _default_target_token(prefix)
+            second = _default_target_token(prefix + [first])
+            third = _default_target_token(prefix + [first, second])
+            requests = [
+                SemanticVerifyInput(prefix, [first]),
+                SemanticVerifyInput(prefix, [first, second]),
+                SemanticVerifyInput(prefix, [first, second, third]),
+            ]
+
+            self.assertBatchMatchesIndividualVerify(model_runner, requests)
+
+    def test_verify_batch_mixed_prefix_lengths_matches_individual_verify(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            prefixes = [[3], [3, 4], [3, 4, 5]]
+            requests = [
+                SemanticVerifyInput(prefix, [_default_target_token(prefix)])
+                for prefix in prefixes
+            ]
+
+            self.assertBatchMatchesIndividualVerify(model_runner, requests)
+
+    def test_verify_batch_preserves_original_request_order(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            prefix = [1, 4]
+            first = _default_target_token(prefix)
+            requests = [
+                SemanticVerifyInput([8, 1], [_default_target_token([8, 1])]),
+                SemanticVerifyInput([2], [_default_target_token([2]), 29]),
+                SemanticVerifyInput([5, 5, 5], [_default_target_token([5, 5, 5])]),
+                SemanticVerifyInput(
+                    prefix,
+                    [first, _default_target_token(prefix + [first])],
+                ),
+            ]
+
+            self.assertBatchMatchesIndividualVerify(model_runner, requests)
+
+    def test_verify_batch_mixed_lengths_preserves_bonus_token(self) -> None:
+        prefix = [101, 102, 103]
+        token_by_context = {
+            tuple(prefix): 330,
+            tuple(prefix + [330]): 3838,
+            tuple(prefix + [330, 3838]): 444,
+        }
+        with _contextual_huggingface_runner(
+            token_by_context,
+            vocab_size=5000,
+            corrupt_token_fn=lambda context, row, position, real_length, max_len: (
+                2610 if position == real_length - 1 else None
+            ),
+        ) as model_runner:
+            requests = [
+                SemanticVerifyInput(prefix, [330]),
+                SemanticVerifyInput(prefix, [330, 3838]),
+            ]
+
+            self.assertBatchMatchesIndividualVerify(model_runner, requests)
+            batch_results = model_runner.verify_batch(requests)
+            self.assertEqual(batch_results[0].committed_tokens, [330, 3838])
+            self.assertEqual(batch_results[0].bonus_token, 3838)
+
+    def test_verify_batch_mixed_lengths_preserves_correction_token(self) -> None:
+        prefix = [7]
+        token_by_context = {
+            tuple(prefix): 21,
+            (8,): 22,
+            (8, 22): 23,
+        }
+
+        def corrupt_correction_position(context, row, position, real_length, max_len):
+            return 29 if context == prefix else None
+
+        with _contextual_huggingface_runner(
+            token_by_context,
+            corrupt_token_fn=corrupt_correction_position,
+        ) as model_runner:
+            requests = [
+                SemanticVerifyInput(prefix, [20]),
+                SemanticVerifyInput([8], [22, 23]),
+            ]
+
+            self.assertBatchMatchesIndividualVerify(model_runner, requests)
+            batch_results = model_runner.verify_batch(requests)
+            self.assertEqual(batch_results[0].accepted_count, 0)
+            self.assertEqual(batch_results[0].correction_token, 21)
+            self.assertEqual(batch_results[0].committed_tokens, [21])
+
+    def test_verify_batch_mixed_lengths_handles_eos(self) -> None:
+        eos = _FakeTokenizer.eos_token_id
+        token_by_context = {
+            (2,): eos,
+            (3,): eos,
+            (4,): 11,
+            (4, 11): eos,
+            (5,): 12,
+            (5, 12): 13,
+        }
+        with _contextual_huggingface_runner(token_by_context) as model_runner:
+            requests = [
+                SemanticVerifyInput([2], [eos, 14]),
+                SemanticVerifyInput([3], [14]),
+                SemanticVerifyInput([4], [11]),
+                SemanticVerifyInput([5], [12, 13]),
+            ]
+
+            self.assertBatchMatchesIndividualVerify(model_runner, requests)
+            batch_results = model_runner.verify_batch(requests)
+            self.assertEqual(batch_results[0].committed_tokens, [eos])
+            self.assertFalse(batch_results[0].rejected)
+            self.assertEqual(batch_results[1].correction_token, eos)
+            self.assertTrue(batch_results[1].rejected)
+            self.assertEqual(batch_results[2].bonus_token, eos)
+            self.assertEqual(batch_results[2].committed_tokens, [11, eos])
+
+    def test_verify_batch_groups_by_prefix_and_draft_length(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            model_runner.verify_batch(
+                [
+                    SemanticVerifyInput([1], [18, 19, 20]),
+                    SemanticVerifyInput([1, 2], [20, 21]),
+                ]
+            )
+
+            target = _FakeModelFactory.models[TARGET_MODEL_NAME]
+            self.assertEqual(len(target.calls), 2)
+            self.assertEqual(
+                [call["input_ids"].shape for call in target.calls],
+                [(1, 4), (1, 4)],
+            )
 
     def test_huggingface_runner_supports_proactive_bonus_tree(self) -> None:
         with patch.dict(sys.modules, _fake_modules()):

@@ -56,6 +56,20 @@ drafting, and DiP-SD optimizer trace evidence. A live smoke run is still
 environment-blocked here because no model paths were provided and `torch` is not
 installed.
 
+Mixed-length verification update: `HuggingFaceModelRunner.verify_batch`
+preserves the simulator's logical batch verification interface, but no longer
+claims or attempts one physical decoder-only target forward for requests with
+different effective lengths. The runner groups real-model verification requests
+by `(prefix_length, draft_length)`, executes only equal-length physical target
+forwards, and restores results to the original logical request order. The
+runner remains responsible for real token semantics: accepted length, accepted
+tokens, correction token, bonus token, EOS handling, and committed tokens.
+Simulator verification latency remains a separate analytical model for the
+logical batch; the number of physical Hugging Face forwards used for safe
+real-model semantics is not used as simulation time. DiP-SD therefore remains
+one logical batch verification even when the real runner internally uses
+multiple equal-length physical forwards.
+
 ## 1. Executive Summary
 
 | Area | Verdict | Paper-experiment impact |

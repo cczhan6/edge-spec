@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M21 real-model smoke harness complete; live model run pending environment
+Current milestone: M22 mixed-length real-model batch verification correctness
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -22,6 +22,63 @@ Current milestone: M21 real-model smoke harness complete; live model run pending
 | M19 Final baseline display/default alignment | complete | `c85f9eb` | `pytest -q` -> 154 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 154 passed; method-specific pytest 66 passed; static checks passed; `git diff --check` -> passed |
 | M20 Baseline event semantics validation | complete | this commit | `pytest -q` -> 176 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 176 passed; method-specific pytest 79 passed; static checks passed |
 | M21 Real-model baseline smoke harness | complete / live run blocked | this commit | `pytest -q tests/test_real_model_smoke.py tests/test_baseline_trace_runner.py tests/test_cli_smoke.py` -> 11 passed; `bash scripts/run_real_model_smoke.sh` -> blocked with explicit missing `TARGET_MODEL_PATH`/`DRAFT_MODEL_PATH`; `python3 -c "import torch"` -> `ModuleNotFoundError: No module named 'torch'`; `pytest -q` -> 180 passed |
+| M22 Mixed-length real-model batch verification | complete | this commit | real Qwen smoke -> `target_only`, `server_only_linear`, `specedge_linear`, `dip_sd` all `success=True`; `pytest -q` -> 187 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 187 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all trace methods `success=True`; `git diff --check` -> passed |
+
+## M22 Mixed-Length Real-Model Batch Verification
+
+### Semantic Boundary
+
+- `HuggingFaceModelRunner` owns real token semantics: accepted length,
+  accepted tokens, correction token, bonus token, EOS handling, and committed
+  tokens.
+- `HuggingFaceModelRunner.verify_batch` is still the simulator-facing logical
+  batch verification API, but mixed effective lengths are no longer sent through
+  one right-padded decoder-only target forward.
+- Real-model verification requests are stably grouped by
+  `(prefix_length, draft_length)`. Each group uses an equal-length physical
+  target forward, and results are restored to the original request order by
+  original input index.
+- Simulator latency remains separate from physical Hugging Face execution.
+  `global_batch_verify` and DiP-SD continue to use the analytical verification
+  latency model for one logical batch; the number of safe equal-length physical
+  forwards is not used as virtual simulation time.
+- DiP-SD optimizer, scheduling semantics, simulator commit rules, and proposed
+  methods are unchanged.
+
+### Regression Coverage
+
+- Added mixed-length HF runner tests requiring
+  `verify(request) == verify_batch(batch)[request]` for every request.
+- Covered same prefix with different draft lengths, different prefix lengths
+  with the same draft length, both prefix and draft length variation, shuffled
+  input order, all-accepted bonus, middle/first-token rejection correction,
+  EOS accepted/correction/bonus outcomes, completed EOS requests inside a
+  mixed-length logical batch, and the real smoke failure shape where
+  `[330, 3838]` became `[330, 2610]` under mixed-length right padding.
+
+### Commands And Results
+
+- `PYTHON_BIN=/root/miniforge3/envs/edge-spec/bin/python TARGET_MODEL_PATH=Qwen/Qwen2.5-7B-Instruct DRAFT_MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct LOCAL_FILES_ONLY=true bash scripts/run_real_model_smoke.sh`
+  -> `target_only`, `server_only_linear`, `specedge_linear`, and `dip_sd` all
+  `success=True`; automatic checks passed, including speculative committed
+  token traces equal to `target_only`.
+- `pytest -q tests/test_dssd_oracle.py` -> 17 passed.
+- `pytest -q` -> 187 passed.
+- `bash scripts/verify_baseline_rebuild.sh` -> full pytest 187 passed;
+  method-specific pytest 79 passed.
+- `bash scripts/run_baseline_trace.sh` -> `target_only`,
+  `server_only_linear`, `server_only_tree`, `specedge_linear`,
+  `specedge_tree`, and `dip_sd` all `success=True`.
+- `git diff --check` -> passed.
+
+### Compatibility Notes
+
+- Real-runner compatibility remains limited to causal LM target/drafter pairs
+  whose tokenizer vocabulary and mapping are compatible with the existing
+  `HuggingFaceModelRunner` checks.
+- Mixed `(prefix_length, draft_length)` logical batches may require multiple
+  physical Hugging Face target forwards. This is intentional for decoder-only
+  correctness and must not be interpreted as simulator latency.
 
 ## M21 Real-Model Baseline Smoke Harness
 
