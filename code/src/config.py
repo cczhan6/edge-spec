@@ -130,8 +130,14 @@ def validate_config(config: dict[str, Any]) -> None:
         )
     server_only = config.get("server_only", {})
     if server_only:
-        if int(server_only.get("batch_size", 1)) <= 0:
+        server_only_batch_size = int(server_only.get("batch_size", 1))
+        if server_only_batch_size <= 0:
             raise ValueError("server_only.batch_size must be positive")
+        if server_only_batch_size != 1:
+            raise ValueError(
+                "server_only.batch_size > 1 is not supported by the current "
+                "single-request server-only runtime"
+            )
         drafter = str(server_only["drafter_profile"])
         if drafter not in config["drafter_profiles"]:
             raise ValueError(f"server_only uses unknown drafter {drafter}")

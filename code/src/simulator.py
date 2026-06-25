@@ -150,6 +150,13 @@ class Simulator:
                 max_branch_width=int(server_config["max_branch_width"]),
                 max_budget=int(server_config["max_budget"]),
             )
+        if self._is_server_only_runtime():
+            server_only_batch_size = int(config.get("server_only", {}).get("batch_size", 1))
+            if server_only_batch_size != 1:
+                raise ValueError(
+                    "server_only.batch_size > 1 is not supported by the current "
+                    "single-request server-only runtime"
+                )
         self._last_specedge_verify_ms = self._initial_specedge_verify_ms()
         self._pipeline_idle_bubble_ms = 0.0
 

@@ -20,42 +20,51 @@ Inputs reviewed:
   locally inspected at commit `1edcaf02ffc41a7b57726450c5357ed216a3b9bc`
 - DiP-SD paper: `https://arxiv.org/abs/2604.20919`
 
-DiP-SD audit boundary: this repository is expected to implement the original
-paper's complete DiP-SD method. A static or heuristic synchronized pipeline is
-not an acceptable public baseline substitute, and `dip_sd` must refer to the
-paper method.
+DiP-SD (Online Adaptation) audit boundary: this repository is expected to
+implement the original paper's core optimizer and synchronized batch pipeline
+inside the project online framework. A static or heuristic synchronized pipeline
+is not an acceptable public baseline substitute, and `dip_sd` must refer to the
+online adaptation of the paper method.
 
 M18 update: the DiP-SD findings from the original audit have been remediated.
 Canonical `dip_sd` now uses the paper optimizer and optimizer-controlled event
 simulation, while `dip_sd_greedy`, `dip_sd_static`, and `dip_sd_heuristic` are
 not public method names.
 
+Final baseline-alignment update: `dip_sd` is reported as
+`DiP-SD (Online Adaptation)`. Server-only linear/tree main experiments use the
+same independent server draft GPU and server target GPU resources, no
+edge-server communication, no proactive drafting, synchronous draft -> verify ->
+state update execution, and `server_only.batch_size = 1`. Server-only batch
+sizes greater than 1 are an optional extension and are now rejected instead of
+being accepted and executed as single-request service.
+
 ## 1. Executive Summary
 
 | Area | Verdict | Paper-experiment impact |
 | --- | --- | --- |
 | `target_only` | PASS | Ready as the greedy reference and speedup denominator. |
-| `server_only_linear` | PARTIAL | Ready only for batch-size-1 traces. Blocks any final result claiming server-only multi-request batching. |
-| `server_only_tree` | PARTIAL | Real tree candidate/verify path exists, but server-only batching gap blocks final batched claims. |
+| `server_only_linear` | PASS for main default | Ready for the fixed `server_only.batch_size=1` main-experiment contract. Multi-request server-only batching is an optional extension and is rejected today. |
+| `server_only_tree` | PASS for main default | Real `specexec_approx` tree candidate/verify path exists under the fixed `server_only.batch_size=1` main-experiment contract. |
 | `specedge_linear` | PARTIAL | Main proactive and server batch mechanics exist. Needs stronger trajectory tests before final official-comparison claims. |
 | `specedge_tree` | PARTIAL | Real tree construction and verification exist. Upstream tree/proactive alignment fidelity remains approximate. |
-| Full `dip_sd` | PASS | Paper-level batch-count, assignment, per-user draft-length optimization and optimizer-controlled event simulation are implemented. |
+| `dip_sd` / DiP-SD (Online Adaptation) | PASS | Paper-level batch-count, assignment, per-user draft-length optimization and optimizer-controlled event simulation are implemented inside the online epoch-barrier framework. |
 | Shared correctness | PARTIAL | Greedy equality is tested on selected paths, but token-accounting and resource-interval invariants are not independently validated. |
 | Legacy aliases | FAIL | Legacy aliases still carry old semantics/config paths instead of being thin mappings to canonical baselines. |
 
-Must-fix items are now concentrated in true server-only batching, legacy alias
-behavior, and broader shared invariant checks.
+Remaining engineering work is concentrated in legacy alias behavior, broader
+shared invariant checks, and optional true multi-request server-only batching.
 
 ## 2. Contract-to-Code Matrix
 
 | Contract item | Code files and key functions/classes | Actual behavior | Tests reviewed | Verdict |
 | --- | --- | --- | --- | --- |
 | Target-only greedy reference | `src/methods.py::get_method_spec`; `src/simulator.py::Simulator._on_target_only_arrive_edge`; `src/model_runner.py::ModelRunner.target_only`; `src/latency.py::target_only_latency_ms` | Calls target greedy generation once per request, emits `target_only_service`, uses a serialized target service timeline, no draft/verify/network events. | `tests/test_target_only.py`, `tests/test_target_only_capacity.py`, `tests/test_semantic_simulator.py` | PASS |
-| Server-only linear SD | `src/methods.py::get_method_spec("server_only_linear")`; `src/simulator.py::_start_server_only_draft`, `_start_server_only_verify`, `_on_server_only_verify_done` | Uses `server_draft_gpu` then `server_target_gpu`, no network/proactive path, but processes one active request lifecycle and hardcodes trace `batch_size: 1`. | `tests/test_server_only_linear.py`, legacy coverage in `tests/test_specedge_methods.py` | PARTIAL |
-| Server-only tree SD | Same server-only simulator path; `src/tree_drafting.py::SpecExecDraftTreeStrategy`; `src/model_runner.py::DraftCandidateTree`, `verify_tree`, `verify_tree_batch` | Uses real tree objects and tree verification, but inherits the single-active-request server-only scheduler. | `tests/test_server_only_tree.py`, `tests/test_specedge_methods.py` | PARTIAL |
+| Server-only linear SD | `src/methods.py::get_method_spec("server_only_linear")`; `src/simulator.py::_start_server_only_draft`, `_start_server_only_verify`, `_on_server_only_verify_done`; `src/config.py::validate_config` | Uses `server_draft_gpu` then `server_target_gpu`, no network/proactive path, processes one request per verification round, records trace `batch_size: 1`, and rejects `server_only.batch_size > 1`. | `tests/test_server_only_linear.py`, legacy coverage in `tests/test_specedge_methods.py` | PASS for main default |
+| Server-only tree SD | Same server-only simulator path; `src/tree_drafting.py::SpecExecDraftTreeStrategy`; `src/model_runner.py::DraftCandidateTree`, `verify_tree`, `verify_tree_batch` | Uses real tree objects and tree verification through the `specexec_approx` path under the fixed batch-size-1 server-only scheduler; rejects unsupported larger batch sizes. | `tests/test_server_only_tree.py`, `tests/test_specedge_methods.py` | PASS for main default |
 | SpecEdge linear | `src/methods.py::get_method_spec("specedge_linear")`; `src/simulator.py::_maybe_start_batch`, `_start_proactive_draft`, `_resolve_proactive_after_accept`, `_resolve_verification` | Edge draft, uplink, server batch verify, downlink, proactive continuation. Conservative commit path, but exact proactive source identity is not exhaustively tested. | `tests/test_specedge_linear.py` | PARTIAL |
 | SpecEdge tree | `src/tree_drafting.py`, `src/model_runner.py::draft_tree`, `draft_bonus_tree`, `verify_tree_batch`; `src/simulator.py::_resolve_proactive_after_accept` | Real tree candidates, tree attention mask verification, proactive subtree generation/rebase. Strategy is documented as SpecExec-inspired approximation. | `tests/test_specedge_tree.py` | PARTIAL |
-| Full DiP-SD | `src/simulator.py::_run_dip_sd`; `src/dip_sd.py::optimize_dip_sd`, `solve_assignment_subproblem`, `solve_draft_length_subproblem`, `evaluate_plan` | Uses the paper variables, exact bounded subproblem solvers, Dinkelbach-equivalent objective updates, and optimizer-controlled event execution. Static/greedy public paths are removed. | `tests/test_dip_sd.py` | PASS |
+| DiP-SD (Online Adaptation) | `src/simulator.py::_run_dip_sd`; `src/dip_sd.py::optimize_dip_sd`, `solve_assignment_subproblem`, `solve_draft_length_subproblem`, `evaluate_plan` | Uses the paper variables, exact bounded subproblem solvers, Dinkelbach-equivalent objective updates, and optimizer-controlled event execution inside the online epoch-barrier framework. Static/greedy public paths are removed. | `tests/test_dip_sd.py` | PASS |
 | Decode-only / no prefill | `README.md`; `scripts/verify_baseline_rebuild.sh`; `src/`, `configs/`, `tests/` grep check | Decode-ready scope is documented and static check rejects prefill execution identifiers outside markdown. | `scripts/verify_baseline_rebuild.sh`, `tests/test_decode_only_initialization.py` | PASS |
 | Legacy aliases | `src/methods.py::SUPPORTED_METHODS`, `get_method_spec`; `src/metrics.py` baseline fallback logic | `sync_batch_sd`, `SpecEdge`, and `server_only` are accepted, but not proven to be thin aliases to canonical rebuilt methods. | `tests/test_specedge_methods.py`, `tests/test_cli_smoke.py` | FAIL |
 
@@ -103,7 +112,7 @@ Paper impact:
 
 ## 4. Server-only-Linear Audit
 
-Status: PARTIAL.
+Status: PASS for the main `server_only.batch_size=1` contract.
 
 Code path:
 
@@ -126,13 +135,15 @@ Actual behavior:
 - For a single request, the loop is synchronized:
   `draft -> verify -> state update -> next draft`.
 - Each active request has at most one unverified linear segment.
-- `server_only.batch_size` exists in `configs/default.yaml`, but values larger
-  than 1 do not create a multi-request verify batch. The simulator serializes
-  one request lifecycle at a time.
+- `server_only.batch_size` is fixed at `1` for main experiments. Values larger
+  than 1 are rejected by config validation and simulator initialization because
+  the current server-only runtime does not yet implement real multi-request
+  verification batches.
 
 Existing tests:
 
-- `tests/test_server_only_linear.py` checks method registration, linear
+- `tests/test_server_only_linear.py` checks method registration, default
+  `batch_size == 1`, linear
   interfaces, no network/proactive events, draft-then-verify round order, and
   output equality with target-only.
 - `tests/test_specedge_methods.py` contains legacy server-only tests and even
@@ -140,20 +151,21 @@ Existing tests:
 
 Issues:
 
-- FAIL for true batching: `batch_size > 1` is accepted by configuration but is
-  operationally ineffective for server-only verification.
-- Existing tests do not include the required two-request batch trajectory.
+- True multi-request server-only batching is not implemented. It is an optional
+  extension, not part of the current main-experiment contract.
+- Unsupported `server_only.batch_size > 1` is now rejected instead of being
+  accepted and silently executed as single-request service.
 
 Paper impact:
 
-- Usable for batch-size-1 server-only traces.
-- Not usable for paper claims involving server-only batched verification,
-  throughput scaling with `batch_size`, or official server-only batching
-  fidelity.
+- Usable for final main experiments under the documented batch-size-1
+  server-only contract.
+- Do not claim throughput scaling with `server_only.batch_size > 1` unless the
+  optional multi-request verification extension is implemented and tested.
 
 ## 5. Server-only-Tree Audit
 
-Status: PARTIAL.
+Status: PASS for the main `server_only.batch_size=1` contract.
 
 Code path:
 
@@ -188,15 +200,18 @@ Existing tests:
 
 Issues:
 
-- Inherits the server-only `batch_size > 1` failure.
+- Inherits the server-only batch-size-1 main contract. Larger batch sizes are
+  rejected until true multi-request server-only verification is implemented.
 - `SpecExecDraftTreeStrategy` is explicitly documented as
   "SpecExec-inspired analytical tree budget, not a strict upstream replay."
 
 Paper impact:
 
-- Usable for batch-size-1 tree-candidate experiments.
-- Not ready for final claims about official server-only batched tree
-  verification or exact upstream SpecEdge tree construction.
+- Usable for final main experiments under the documented batch-size-1
+  `specexec_approx` tree-candidate contract.
+- Do not claim official multi-request server-only batching or exact upstream
+  SpecEdge tree construction without implementing and testing those optional
+  extensions.
 
 ## 6. SpecEdge-Linear Audit
 
@@ -295,7 +310,7 @@ Paper impact:
 - Not ready for exact official SpecEdge tree-comparison claims without stronger
   source-leaf and upstream-fidelity tests.
 
-## 8. Full DiP-SD Audit
+## 8. DiP-SD (Online Adaptation) Audit
 
 Status: PASS after M18.
 
@@ -314,11 +329,11 @@ Code path:
 - Static/greedy substitute functions and public method names are removed from
   code paths. `dip_sd.optimizer` must be `paper_exact`.
 
-Actual behavior against the full DiP-SD boundary:
+Actual behavior against the DiP-SD (Online Adaptation) boundary:
 
 | Requirement | Verdict | Evidence |
 | --- | --- | --- |
-| Candidates are linear segments | PASS | DiP-SD segments set `tree_strategy="linear"` and use `model_runner.draft`. |
+| Candidates are linear segments | PASS | DiP-SD (Online Adaptation) segments set `tree_strategy="linear"` and use `model_runner.draft`. |
 | One unverified segment per request per round | PASS | Each active request appears once in the optimizer plan; redraft waits for result arrival and the next epoch barrier. |
 | Request waits for verification/result update before next round | PASS | `request_ready_ms` is set to result arrival time and draft start is bounded by the epoch start. |
 | Batches are non-empty and visited in deterministic order | PASS | Optimizer validation rejects empty batches; simulator iterates ordered `plan.batches`. |
@@ -338,8 +353,8 @@ Actual behavior against the full DiP-SD boundary:
 
 Remaining caveats:
 
-- The simulator is an online epoch-barrier adaptation of the paper's fixed
-  active-cohort optimization horizon.
+- The simulator is the DiP-SD core optimizer and synchronized batch pipeline
+  adapted to this project's online epoch-barrier request admission framework.
 - Trace span validation compares optimizer `S` to ordered verification-stage
   span; full epoch wall-clock includes warm-up/drain and barrier overhead.
 - Hardware cost coefficients are analytical configuration parameters and should
@@ -347,8 +362,9 @@ Remaining caveats:
 
 Paper impact:
 
-- `dip_sd` is now suitable for small-scale and formal experiments under the
-  documented analytical latency model and online epoch-barrier adaptation.
+- `dip_sd` is suitable for experiments when labeled as
+  `DiP-SD (Online Adaptation)` under the documented analytical latency model
+  and online epoch-barrier adaptation.
 
 ## 9. Shared Correctness Audit
 
@@ -363,15 +379,15 @@ Paper impact:
 | Unified request completion | PARTIAL | `src/simulator.py` finish events/status | Covered indirectly by simulator finishing; not audited by a shared invariant test. |
 | Bonus/correction consistency | PARTIAL | `src/model_runner.py::VerificationResult`; `_resolve_verification` | Basic behavior exists; cross-method accounting tests are missing. |
 | Legacy aliases only map to new implementation | FAIL | `src/methods.py`, `src/metrics.py` | Legacy aliases are accepted but not strict canonical aliases. Blocks clean final result interpretation. |
-| Config accepted but operationally ineffective | FAIL for server-only batch | `configs/default.yaml`, `src/simulator.py::_start_server_only_verify` | `server_only.batch_size > 1` does not produce true batch verification. |
-| Tests and implementation sharing wrong assumption | PARTIAL | Current tests | Risk is real for server-only batching, proactive alignment edge cases, and DiP-SD optimizer fidelity. |
+| Unsupported server-only batch size rejected | PASS | `src/config.py`, `src/simulator.py`, `tests/test_server_only_linear.py`, `tests/test_server_only_tree.py` | `server_only.batch_size > 1` is an optional extension and is rejected today. |
+| Tests and implementation sharing wrong assumption | PARTIAL | Current tests | Remaining risk is concentrated in proactive alignment edge cases and broader invariant checks. |
 
 ## 10. Missing Trace Tests
 
-### Test A: Server-only Real Batch
+### Test A: Optional Server-only Real Batch Extension
 
-Purpose: prove `server_only.batch_size = 2` is a real target batch, not two
-single-request verifications.
+Purpose: if future work enables `server_only.batch_size > 1`, prove it is a real
+target batch, not two single-request verifications.
 
 Setup:
 
@@ -389,7 +405,7 @@ Expected assertions:
   as a logical batch.
 - Outputs equal target-only greedy.
 
-Expected current result: FAIL.
+Expected current result: configuration/runtime rejection before simulation.
 
 ### Test B: SpecEdge Proactive Alignment
 
@@ -445,7 +461,7 @@ Expected current result: PASS after M17. Covered by
 `test_dip_sd_verification_follows_paper_batch_order`, and
 `test_dip_sd_request_waits_for_verification_before_redraft`.
 
-### Test D: Full DiP-SD Optimizer Correctness
+### Test D: DiP-SD (Online Adaptation) Optimizer Correctness
 
 Purpose: prove the canonical `dip_sd` planner matches the paper-level optimizer
 semantics on small solvable cases.
@@ -465,9 +481,8 @@ the simulator executes the optimizer plan.
 
 ## 11. Required Fixes
 
-1. Implement true multi-request server-only batch verification for
-   `server_only_linear` and `server_only_tree`, or document `batch_size` as
-   currently limited to 1 and remove larger values from valid final experiments.
+1. Keep server-only `server_only.batch_size > 1` rejected until true
+   multi-request verification is implemented and covered by Test A.
 2. Make legacy aliases strict mappings to canonical implementations, or exclude
    them from final experiment method sets.
 3. Add shared invariant validators for token accounting, resource interval
@@ -490,7 +505,9 @@ the simulator executes the optimizer plan.
 
 - Decode-only scope is acceptable: prompt prefill, initial prompt transfer, and
   initial KV establishment remain out of simulation time.
-- Server-only `batch_size = 1` is acceptable as a correctness-only baseline.
+- Server-only `batch_size = 1` is the main-experiment baseline setting.
+- Server-only `batch_size > 1` is an optional extension and is currently
+  rejected.
 - Static, greedy, or heuristic DiP-SD substitutes are not accepted baselines.
   The public method set now exposes only canonical `dip_sd`.
 - Configured/offline acceptance priors are acceptable as long as no future target
@@ -505,14 +522,14 @@ the simulator executes the optimizer plan.
 | Can run unit tests | All canonical baselines | Current suite can be run, but passing tests are not sufficient for semantic closure. |
 | Can run small trace experiments | `target_only`, `dip_sd`, `server_only_linear` with batch size 1, `server_only_tree` with batch size 1, `specedge_linear`, `specedge_tree` | Report caveats in manifests and analysis. |
 | Can run real-model smoke trials | `target_only`, `dip_sd`, batch-size-1 server-only baselines, SpecEdge linear/tree | Use small samples first; inspect traces, not only aggregate metrics. |
-| Can enter paper formal experiments | `target_only`, `dip_sd` | Server-only batching, legacy aliases, and stronger SpecEdge proactive invariants remain outside this readiness level. |
-| Temporarily cannot use | Server-only with `batch_size > 1`; legacy aliases for final results | These would misstate the implemented semantics. |
+| Can enter main paper experiments under declared settings | `target_only`, `dip_sd`, `server_only_linear` with batch size 1, `server_only_tree` with batch size 1 | Legacy aliases and stronger SpecEdge proactive invariants remain outside this readiness level. |
+| Temporarily cannot configure | Server-only with `batch_size > 1`; legacy aliases for final result labels | Larger server-only batches are rejected until the optional extension is implemented. |
 
 ## Final Findings
 
 Must fix:
 
-- Server-only real batching is missing.
+- Keep Server-only `batch_size > 1` rejected until real batching is implemented.
 - Legacy aliases are not clean canonical aliases.
 - Shared token-accounting/resource-interval invariant tests are still missing.
 
@@ -525,18 +542,18 @@ Recommended:
 Acceptable:
 
 - No prefill.
-- No DiP-SD substitute baseline is accepted; public `dip_sd` is the paper-method
-  implementation.
+- No DiP-SD substitute baseline is accepted; public `dip_sd` is
+  `DiP-SD (Online Adaptation)`.
 - Tree approximation for small experiments when labeled.
 
 Small-scale ready:
 
 - `target_only`
-- `dip_sd`
+- `dip_sd` / `DiP-SD (Online Adaptation)`
 - `server_only_linear` / `server_only_tree` only with batch size 1
 - `specedge_linear` / `specedge_tree` with alignment caveats
 
-Not ready for final paper results:
+Currently prohibited / not final-result labels:
 
 - Server-only `batch_size > 1`
 - Legacy aliases

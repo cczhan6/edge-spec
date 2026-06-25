@@ -94,6 +94,10 @@ sync_batch:
   global_batch_timeout_ms: 20
 
 server_only:
+  # Project main experiments fix the official server-only
+  # client.max_batch_size equivalent at 1. Values greater than 1 are an
+  # optional extension and are rejected by the current single-request
+  # server-only runtime.
   batch_size: 1
   drafter_profile: medium
   tree_draft_strategy: specexec_approx

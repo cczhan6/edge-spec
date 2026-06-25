@@ -34,11 +34,11 @@
 |---|---|---|
 | `full` | 主方法 | 异构端侧 drafter、动态 gamma、多 verifier lane、持续乐观起草和精细回滚。 |
 | `target_only` | 自回归基线 | decode-ready 请求由单个边缘 target 服务资源完整生成；decode-only 口径下无通信。 |
-| `server_only_linear` | Server-only SD-Linear | 服务器侧线性 draft + target verify，draft/target 使用独立逻辑资源，无端边通信。 |
+| `server_only_linear` | Server-only SD-Linear | 服务器侧线性 draft + target verify，draft/target 使用独立逻辑资源，无端边通信；主实验固定 `server_only.batch_size=1`。 |
 | `specedge_linear` | SpecEdge-Linear | 端侧线性 draft、端边往返、server batch validation、proactive continuation。 |
-| `dip_sd` | DiP-SD | 论文级 batch-count、用户分组和 per-user draft length 联合优化，按 epoch 有序 batch verify。 |
-| `server_only_tree` | Server-only SD-Tree | 服务器侧 SpecExec-style 树形 draft + target verify，无 proactive、无端边通信。 |
-| `specedge_tree` | SpecEdge-Tree | 端侧 SpecExec-style 树形 draft、server batch validation、proactive continuation。 |
+| `dip_sd` | DiP-SD (Online Adaptation) | 论文优化器和同步批次流水在本项目在线请求调度框架中的适配；按 epoch/barrier 接入新请求。 |
+| `server_only_tree` | Server-only SD-Tree | 服务器侧 `specexec_approx` 树形 draft + target verify，无 proactive、无端边通信；主实验固定 `server_only.batch_size=1`。 |
+| `specedge_tree` | SpecEdge-Tree | 端侧 `specexec_approx` 树形 draft、server batch validation、proactive continuation。 |
 | `wo_async` | 组件消融 | 去掉持续乐观起草。 |
 | `wo_scheduling` | 组件消融 | 去掉 heterogeneity-aware lane scheduling。 |
 | `conservative_rollback` | 组件消融 | 去掉精细 bonus 重定位和局部保留。 |
@@ -105,7 +105,9 @@ bash scripts/run.sh sensitivity-lanes
 | `SAMPLES_PER_CATEGORY` | 空，默认使用 `simulation.num_requests` 全局抽样 |
 | `TREE_DRAFT_STRATEGY` | 空，默认使用配置文件中的 `specexec_approx`；可设 `linear` 或 `specexec_approx` |
 
-`specedge_tree` 和 `server_only_tree` 采用 `specexec_approx` 树形口径。该模式会记录 `processed_candidate_count`、`retained_tree_nodes` 和 `target_verify_tree_nodes` 三类节点数。`specedge_linear` 和 `server_only_linear` 强制使用线性候选，不依赖树形配置。
+`specedge_tree` 和 `server_only_tree` 采用 `specexec_approx` 树形口径。该模式会记录 `processed_candidate_count`、`retained_tree_nodes` 和 `target_verify_tree_nodes` 三类节点数。`specedge_linear` 和 `server_only_linear` 强制使用线性候选，不依赖树形配置。`server_only_linear` 与 `server_only_tree` 使用相同服务器资源和同步 draft -> verify -> state update 设置；官方 SpecEdge server-only 支持多请求 tree verification，但本项目主实验固定 `server_only.batch_size=1`，当前配置大于 1 会报错而不是退化为单请求执行。
+
+`dip_sd` 的正式显示名称是 `DiP-SD (Online Adaptation)`。它保留 DiP-SD 的 batch-count、用户分组和 per-request draft length 优化，以及 batch 内等待所有成员 ready、慢设备阻塞所在 batch、不同 batch 间 draft/verification 流水重叠、请求在当前 verification 和 KV/state update 后才进入下一轮的语义；差异在于新请求按本项目在线 epoch/barrier 规则进入后续优化周期。
 
 也可以直接用命令覆盖：
 

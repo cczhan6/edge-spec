@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M18 complete
+Current milestone: M19 complete
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -18,7 +18,55 @@ Current milestone: M18 complete
 | M15 DiP-SD paper-to-code reproduction spec | complete | `f052b0e` | `git diff --check` -> passed; `pytest -q tests/test_dip_sd.py` -> 9 passed |
 | M16 Full DiP-SD paper optimizer | complete | `07bc84c` | `pytest -q tests/test_dip_sd.py` -> 16 passed; `pytest -q` -> 144 passed |
 | M17 DiP-SD optimizer simulation integration | complete | `a1fbd02` | `pytest -q tests/test_dip_sd.py` -> 24 passed; `pytest -q` -> 152 passed |
-| M18 DiP-SD public interface cleanup | complete | this commit | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 151 passed; method-specific pytest 63 passed; static checks passed; `pytest -q` -> 151 passed; `git diff --check` -> passed |
+| M18 DiP-SD public interface cleanup | complete | `b7410ec` | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 151 passed; method-specific pytest 63 passed; static checks passed; `pytest -q` -> 151 passed; `git diff --check` -> passed |
+| M19 Final baseline display/default alignment | complete | this commit | `pytest -q` -> 154 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 154 passed; method-specific pytest 66 passed; static checks passed; `git diff --check` -> passed |
+
+## M19 Final Baseline Display And Default Alignment
+
+### Completion Conditions
+
+- Standardized the public DiP-SD display name to `DiP-SD (Online Adaptation)`.
+- Documented `dip_sd` as the paper optimizer and synchronized batch pipeline
+  adapted to this project's online epoch/barrier request admission framework.
+- Kept proposed-method behavior unchanged and did not restore prefill.
+- Fixed `server_only_linear` and `server_only_tree` main experiments to the
+  same server-only system setting: independent server draft and target GPUs, no
+  edge-server communication, no proactive drafting, synchronous draft -> verify
+  -> state update, and `server_only.batch_size = 1`.
+- Documented official SpecEdge server-only multi-request tree verification as an
+  optional extension; this repository currently rejects `server_only.batch_size
+  > 1` rather than accepting it and executing single-request service.
+- Marked server-only and SpecEdge tree paths as `specexec_approx` where they use
+  the local approximation.
+
+### Changed Files
+
+- Updated `README.md`.
+- Updated `configs/default.yaml`.
+- Updated `docs/baseline_contract.md`.
+- Updated `docs/baseline_semantic_audit.md`.
+- Updated `docs/baseline_status.md`.
+- Updated `docs/experiment.md`.
+- Updated `src/config.py`.
+- Updated `src/simulator.py`.
+- Updated `tests/test_server_only_linear.py`.
+- Updated `tests/test_server_only_tree.py`.
+
+### Commands And Results
+
+- `pytest -q` -> 154 passed.
+- `bash scripts/verify_baseline_rebuild.sh` -> full pytest 154 passed;
+  method-specific pytest 66 passed; no-prefill and public DiP-SD static checks
+  passed.
+- `git diff --check` -> initially reported one trailing whitespace in
+  `docs/baseline_contract.md`; after removing it, `git diff --check` passed.
+
+### Deviations Remaining
+
+- `server_only.batch_size > 1` is an optional extension and is currently
+  rejected by config/runtime validation.
+- Legacy aliases remain compatibility paths and should not be used for final
+  paper result labels.
 
 ## M15 DiP-SD Paper-To-Code Reproduction Spec
 
@@ -67,8 +115,9 @@ Current milestone: M18 complete
   memory, prefix-length, and acceptance-estimate inputs.
 - Acceptance estimates must be offline/profile/past-only and the optimizer must
   not receive future realized target acceptance.
-- Canonical `dip_sd` starts from a fixed cohort assumption. Any online wrapper
-  must be separately named `dip_sd_online`.
+- Superseded by M19: canonical `dip_sd` is reported as
+  `DiP-SD (Online Adaptation)`, using the paper optimizer within the project's
+  online epoch/barrier framework.
 
 ### Deviations Remaining At M15 Exit
 
@@ -220,13 +269,14 @@ Current milestone: M18 complete
 
 ### Deviations Remaining
 
-- The `dip_sd` simulator remains the documented online epoch-barrier adaptation
-  around the paper's fixed active-cohort optimization horizon.
+- The `dip_sd` simulator is the documented `DiP-SD (Online Adaptation)` method:
+  the paper optimizer and synchronized batch pipeline inside the project's
+  online epoch/barrier framework.
 - DiP-SD trace-span validation compares optimizer `S` to ordered
   verification-stage span; full epoch wall-clock also includes warm-up/drain and
   barrier overhead.
-- Server-only `batch_size > 1` remains a separate unresolved semantic issue
-  outside the DiP-SD cleanup.
+- Server-only `batch_size > 1` is an optional extension and is rejected by the
+  current runtime until true multi-request verification is implemented.
 - Legacy aliases remain compatibility paths and should not be used for final
   paper result labels.
 
@@ -289,7 +339,8 @@ Only `target_only` currently exists under the required name. Current `SpecEdge` 
 
 - `target_only` currently models final response downlink latency/payload, but the contract requires no decode-stage communication for target-only.
 - Current `VerificationResult` has `emitted_ids` and `rejected`; the contract requires `committed_tokens`, `correction_token`, and `bonus_token`.
-- `server_only` currently runs one request lifecycle at a time with batch size 1 and no explicit `server_only.batch_size`.
+- At M0, `server_only` ran one request lifecycle at a time with batch size 1
+  and no explicit `server_only.batch_size`.
 - `server_only` still models final response downlink, while the contract says server-only has no decode-stage network.
 - `server_only` and `SpecEdge` are old names; linear/tree variants are not separated.
 - `SpecEdge` default config uses static batch size 1; contract identifies dynamic batching as canonical for online-arrival experiments while retaining static mode for sensitivity.
@@ -440,7 +491,8 @@ None at M0.
 
 ### Contract Deviations Remaining
 
-- Server-only batch sizes greater than one are explicit in config but the current event loop still executes one active server-only request lifecycle at a time. This is a known gap for tree/batched server-only work in M8/M10.
+- Superseded by M19: server-only batch sizes greater than one are an optional
+  extension and are rejected by current config/runtime validation.
 - `specedge_linear`, `specedge_tree`, `server_only_tree`, and `dip_sd` are still absent.
 - DiP-SD remains unimplemented; planned for M5-M6.
 
@@ -477,7 +529,8 @@ None at M0.
 ### Contract Deviations Remaining
 
 - `dip_sd`, `server_only_tree`, and `specedge_tree` are still absent.
-- Server-only batch sizes greater than one remain a known gap.
+- Server-only batch sizes greater than one remain an optional extension and are
+  rejected by current config/runtime validation.
 - Exact SpecEdge tree proactive reuse source-leaf check remains for M9.
 
 ### Decisions
@@ -518,7 +571,8 @@ None at M0.
 
 - `dip_sd` canonical method is still intentionally unsupported because the optimizer is not complete. The available method is `dip_sd_greedy`.
 - The M5 pipeline uses fixed grouping and fixed draft length only; M6 must add deterministic optimizer and then expose `dip_sd`.
-- Server-only batch sizes greater than one remain a known gap.
+- Server-only batch sizes greater than one remain an optional extension and are
+  rejected by current config/runtime validation.
 - Tree baselines remain absent.
 
 ### Decisions
@@ -556,7 +610,8 @@ None at M0.
 ### Contract Deviations Remaining
 
 - The optimizer uses deterministic bounded enumeration for draft lengths and deterministic assignment updates rather than an external MILP solver. This is treated as an exact bounded implementation for configured small active cohorts; larger equal-resource experiments should revisit solver scalability.
-- Server-only batch sizes greater than one remain a known gap.
+- Server-only batch sizes greater than one remain an optional extension and are
+  rejected by current config/runtime validation.
 - Tree baselines remain absent.
 
 ### Decisions
@@ -591,7 +646,8 @@ None at M0.
 ### Contract Deviations Remaining
 
 - `server_only_tree` and `specedge_tree` method names are still absent; planned for M8-M9.
-- Server-only batch sizes greater than one remain a known gap.
+- Server-only batch sizes greater than one remain an optional extension and are
+  rejected by current config/runtime validation.
 - Exact SpecEdge proactive reuse source-leaf check remains for M9.
 
 ### Decisions
@@ -624,7 +680,8 @@ None at M0.
 
 ### Contract Deviations Remaining
 
-- Server-only batch sizes greater than one remain a known gap.
+- Server-only batch sizes greater than one remain an optional extension and are
+  rejected by current config/runtime validation.
 - `specedge_tree` is still absent.
 - Exact SpecEdge proactive reuse source-leaf check remains for M9.
 
@@ -658,7 +715,8 @@ None at M0.
 
 ### Contract Deviations Remaining
 
-- Server-only batch sizes greater than one remain a known gap.
+- Server-only batch sizes greater than one remain an optional extension and are
+  rejected by current config/runtime validation.
 - M10 still needs global verification script, docs cleanup, old-name cleanup, and final no-prefill static check.
 
 ### Decisions
@@ -700,7 +758,8 @@ None at M0.
 
 ### Contract Deviations Remaining
 
-- Server-only batch sizes greater than one are accepted in config but the current server-only event loop still executes one active server-only request lifecycle at a time. This is retained as a documented resource-model limitation rather than silently claiming equal-resource batched server-only behavior.
+- Superseded by M19: server-only batch sizes greater than one are rejected until
+  true multi-request server-only verification is implemented.
 - Legacy aliases remain in code and tests for backward compatibility. Canonical baseline names are the default CLI methods and the names used by the rebuild tests.
 
 ### Decisions

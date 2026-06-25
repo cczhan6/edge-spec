@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import unittest
 
+from src.config import validate_config
 from src.methods import get_method_spec
 from src.simulator import Simulator
 from tests.common import accepting_model_runner, rejecting_model_runner, small_config
 
 
 class ServerOnlyLinearTest(unittest.TestCase):
+    def test_server_only_linear_default_batch_size_is_one(self) -> None:
+        config, _, _ = small_config(num_requests=1, output_len=4)
+
+        self.assertEqual(config["server_only"]["batch_size"], 1)
+
     def test_server_only_linear_method_is_registered(self) -> None:
         config, _, _ = small_config(num_requests=1, output_len=4)
 
@@ -120,6 +126,21 @@ class ServerOnlyLinearTest(unittest.TestCase):
             self.assertEqual(
                 [request.generated_ids for request in server_only.requests],
                 [request.generated_ids for request in target.requests],
+            )
+
+    def test_server_only_rejects_unsupported_batch_size(self) -> None:
+        config, model_runner, workload = small_config(num_requests=2, output_len=6)
+        config["server_only"]["batch_size"] = 2
+
+        with self.assertRaisesRegex(ValueError, "server_only.batch_size > 1"):
+            validate_config(config)
+        with self.assertRaisesRegex(ValueError, "server_only.batch_size > 1"):
+            Simulator(
+                config,
+                model_runner,
+                workload,
+                "combined_strong_heterogeneous",
+                "server_only_linear",
             )
 
 

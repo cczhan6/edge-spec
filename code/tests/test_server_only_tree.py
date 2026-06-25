@@ -11,6 +11,11 @@ from tests.common import accepting_model_runner, small_config
 
 
 class ServerOnlyTreeCoreTest(unittest.TestCase):
+    def test_server_only_tree_default_batch_size_is_one(self) -> None:
+        config = load_config("configs/default.yaml")
+
+        self.assertEqual(config["server_only"]["batch_size"], 1)
+
     def test_server_only_tree_method_is_registered(self) -> None:
         config = load_config("configs/default.yaml")
 

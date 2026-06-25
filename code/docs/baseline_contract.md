@@ -2,7 +2,7 @@
 
 **Status:** Draft v0.1  
 **Scope:** Decode-only evaluation  
-**Baselines:** `target_only`, `server_only`, `specedge`, `dip_sd`  
+**Baselines:** `target_only`, `server_only_linear`, `server_only_tree`, `specedge_linear`, `specedge_tree`, `dip_sd`
 **Project:** Edge–server collaborative speculative decoding
 
 ---
@@ -121,7 +121,7 @@ Server-only SD-Linear
 Server-only SD-Tree
 SpecEdge-Linear
 SpecEdge-Tree
-DiP-SD (online adaptation)
+DiP-SD (Online Adaptation)
 ```
 
 `server_only` must not be shortened to “server” in plots because it is a speculative-decoding method, not target-only autoregressive decoding.
@@ -193,11 +193,13 @@ The implementation follows the official SpecEdge repository’s server-only exec
 - accepted tokens and a bonus/correction token update the sequence and KV state;
 - the next iteration starts after the previous verification completes.
 
-The official example configuration places the draft and target models on separate server GPUs. This project intentionally changes that deployment:
+The official example configuration places the draft and target models on separate server GPUs. This project retains that deployment:
 
 > The draft model and target model are deployed on two separate server GPUs, following the official repository configuration.
 
-The default official example places the target model on `cuda:0` and the draft model on `cuda:1`. This resource placement is retained for both the linear and tree variants.
+The current simulator records this as independent logical resources named
+`server_draft_gpu` and `server_target_gpu` for both the linear and tree
+variants.
 
 ## 5.3 Deployment
 
@@ -218,9 +220,9 @@ Two candidate variants are supported:
 - `server_only_linear`: conventional linear speculative decoding;
 - `server_only_tree`: the official repository's SpecExec-style tree speculative decoding.
 
-Both variants use the same official two-server-GPU placement: the drafter uses the server draft GPU and the target uses the server target GPU. The default main comparison may use the linear variant, while the tree variant is retained for faithful comparison with native SpecEdge.
+Both variants use the same two-server-GPU placement and scheduling settings: the drafter uses the server draft GPU, the target uses the server target GPU, there is no edge-server communication, no proactive drafting, and each request follows synchronous draft -> verify -> state update order. Linear and tree variants change only candidate structure, not resources or scheduling.
 
-For the tree variant, `server_only_tree` uses the same SpecExec-style tree construction parameters as `specedge_tree`:
+For the tree variant, `server_only_tree` currently uses the local `specexec_approx` tree path with the configured `server_only` tree construction parameters:
 
 ```text
 max_n_beams
@@ -229,7 +231,7 @@ max_branch_width
 max_budget
 ```
 
-Using the same candidate-tree policy prevents candidate quality from becoming an uncontrolled difference between `server_only` and `specedge`.
+Linear/tree selection changes candidate structure only; it does not change the server-only resource or scheduling setting.
 
 ## 5.5 Execution flow
 
@@ -257,18 +259,20 @@ There is no edge–server communication latency.
 
 ## 5.6 Batching rule
 
-`server_only.batch_size` must be explicit in the configuration and result manifest.
+`server_only.batch_size` must be explicit in the configuration and result manifest. It corresponds to the server-only `max_batch_size`/`client.max_batch_size` knob in the official SpecEdge implementation.
 
-The default batching contract is:
+The official SpecEdge server-only implementation supports multi-request batched tree verification, but the official default example and this project's main experiments use `max_batch_size = 1` (`server_only.batch_size: 1`).
+
+The configured batching contract is:
 
 - requests are admitted in FCFS order;
-- up to `batch_size` active requests are processed together;
+- when `batch_size == 1`, one active request is processed per server-only verification round;
 - tree drafting for the active batch finishes before target verification begins;
 - drafting and target verification use separate GPU resources;
 - the canonical official loop still executes the two phases in round order rather than proactively overlapping consecutive rounds;
 - completed slots may be refilled at the next iteration boundary.
 
-A batch size of one is valid for correctness testing but must not be silently used as the only performance configuration.
+Multi-request server-only verification is an optional extension in this repository. Until it is implemented as a real single verification batch, `server_only.batch_size > 1` is rejected by configuration/runtime validation rather than silently executing as single-request service.
 
 ## 5.7 Required invariants
 
@@ -307,7 +311,7 @@ The baseline follows the mechanism exposed by the SpecEdge paper and official re
 7. otherwise, invalid proactive work is discarded;
 8. the client updates sequence and KV state and continues.
 
-This is a native tree-based SpecEdge baseline, not a linearized approximation.
+This is a tree-based SpecEdge baseline, not a linearized approximation. The current tree construction path is explicitly labeled `specexec_approx`: it is a local SpecExec-style approximation for analytical simulation, not a claim of exact upstream CUDA/KV-cache runtime replay.
 
 ## 6.3 Deployment
 
@@ -322,7 +326,7 @@ The prompt is not transmitted because prefix state is assumed to exist before de
 
 ## 6.4 Initial tree drafting
 
-The initial candidate tree uses the official repository’s SpecExec-style logic and the configured limits:
+The initial candidate tree uses the local `specexec_approx` SpecExec-style logic and the configured limits:
 
 ```text
 max_n_beams
@@ -333,7 +337,11 @@ max_budget
 
 Candidate expansion is based on cumulative draft-model score subject to the branch, depth, and total-budget limits.
 
-The exact tree configuration must be shared with `server_only` when those two baselines are compared.
+Tree configuration must be recorded for both `specedge_tree` and
+`server_only_tree`. If a sensitivity study intentionally equalizes their tree
+budgets, that override must be explicit; the main baseline contract does not
+change server-only resource or scheduling settings when switching between
+linear and tree candidates.
 
 ## 6.5 Server verification and batching
 
@@ -407,11 +415,11 @@ Offline parameter sweeps may select these values, but online access to future ve
 
 ---
 
-# 7. DiP-SD contract
+# 7. DiP-SD (Online Adaptation) contract
 
 ## 7.1 Role
 
-`dip_sd` is the distributed pipelined speculative-decoding baseline with joint batch assignment and per-user draft-length optimization.
+`dip_sd` is displayed as **DiP-SD (Online Adaptation)**: the DiP-SD optimizer and synchronized batch pipeline adapted to this project's online request scheduling framework.
 
 It answers:
 
@@ -419,7 +427,7 @@ It answers:
 
 ## 7.2 Source basis and implementation status
 
-No official DiP-SD implementation is used. This baseline is a paper-based reimplementation.
+No official DiP-SD implementation is used. This baseline is a paper-based reimplementation of the core DiP-SD method adapted to the project's online serving framework, where closed-horizon paper optimization is wrapped by epoch/barrier request admission.
 
 The paper defines:
 
@@ -464,7 +472,7 @@ start next local draft round
 
 A request cannot begin its next draft round before receiving and applying the current round’s verification result.
 
-Therefore DiP-SD does **not** create multiple dependent, unverified segments for the same request. Its pipeline comes from interleaving different batches, not from speculative advancement of one request across several verification rounds.
+Therefore DiP-SD (Online Adaptation) does **not** create multiple dependent, unverified segments for the same request. Its pipeline comes from interleaving different batches, not from speculative advancement of one request across several verification rounds.
 
 ## 7.5 Ordered batch pipeline
 
@@ -557,7 +565,7 @@ The paper’s optimization assumes an approximately stationary active cohort dur
 Results must display the method as:
 
 ```text
-DiP-SD (online adaptation)
+DiP-SD (Online Adaptation)
 ```
 
 and the manifest must contain:
@@ -596,19 +604,19 @@ If an explicit GPU-memory model has not yet been implemented, `max_batch_size` a
 
 # 8. Cross-baseline comparison table
 
-| Property | Target-only | Server-only SD | SpecEdge | DiP-SD |
+| Property | Target-only | Server-only SD | SpecEdge | DiP-SD (Online Adaptation) |
 |---|---|---|---|---|
 | Draft location | None | Server | Edge device | Edge device |
 | Target location | Server | Server | Server | Server |
-| Candidate form | None | SpecExec tree | SpecExec tree | Linear sequence |
+| Candidate form | None | Linear or `specexec_approx` tree | Linear or `specexec_approx` tree | Linear sequence |
 | Draft/target resource | Target only | Separate server draft/target GPUs | Separate edge/server resources | Separate edge/server resources |
 | Network during decode | No | No | Yes | Yes |
-| Target verification batching | No by default | Configurable | Static or dynamic | Ordered fixed batches |
+| Target verification batching | No by default | Fixed at 1 in main experiments; >1 optional extension currently rejected | Static or dynamic | Ordered fixed batches |
 | Proactive drafting while waiting | No | No | Yes | No |
 | Multiple unverified rounds/request | No | No | Proactive subtree only | No |
 | Dynamic per-user draft length | No | Tree parameters | Fixed configured tree/proactive limits | Yes, optimizer selected |
 | Reconfiguration for arrivals | FCFS queue | Batch refill | Server queue/batcher | Epoch barrier |
-| Source status | Project implementation | Official-repo mechanism + shared-GPU adaptation | Official paper/repository | Paper reimplementation |
+| Source status | Project implementation | Official-repo mechanism with project batch-size-1 default | Official paper/repository with `specexec_approx` local tree path when configured | Paper reimplementation with online epoch-barrier adaptation |
 
 ---
 
@@ -719,6 +727,9 @@ test_server_only_round_order_is_draft_then_verify
 test_server_only_has_no_network_events
 test_server_only_has_no_proactive_state
 test_server_only_one_candidate_tree_per_request
+test_server_only_linear_default_batch_size_is_one
+test_server_only_tree_default_batch_size_is_one
+test_server_only_rejects_unsupported_batch_size
 ```
 
 ## 10.4 SpecEdge
