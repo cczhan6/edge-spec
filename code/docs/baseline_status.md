@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M20 complete
+Current milestone: M21 real-model smoke harness complete; live model run pending environment
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -21,6 +21,62 @@ Current milestone: M20 complete
 | M18 DiP-SD public interface cleanup | complete | `b7410ec` | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 151 passed; method-specific pytest 63 passed; static checks passed; `pytest -q` -> 151 passed; `git diff --check` -> passed |
 | M19 Final baseline display/default alignment | complete | `c85f9eb` | `pytest -q` -> 154 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 154 passed; method-specific pytest 66 passed; static checks passed; `git diff --check` -> passed |
 | M20 Baseline event semantics validation | complete | this commit | `pytest -q` -> 176 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 176 passed; method-specific pytest 79 passed; static checks passed |
+| M21 Real-model baseline smoke harness | complete / live run blocked | this commit | `pytest -q tests/test_real_model_smoke.py tests/test_baseline_trace_runner.py tests/test_cli_smoke.py` -> 11 passed; `bash scripts/run_real_model_smoke.sh` -> blocked with explicit missing `TARGET_MODEL_PATH`/`DRAFT_MODEL_PATH`; `python3 -c "import torch"` -> `ModuleNotFoundError: No module named 'torch'`; `pytest -q` -> 180 passed |
+
+## M21 Real-Model Baseline Smoke Harness
+
+### Completion Conditions
+
+- Added `scripts/run_real_model_smoke.sh` for the canonical smoke methods:
+  `target_only`, `server_only_linear`, `specedge_linear`, and `dip_sd`.
+- Added `scripts/real_model_smoke.py` to prepare a fixed small decode-only
+  config/dataset subset, write per-method run manifests, and verify trace
+  outputs.
+- The runner requires explicit `TARGET_MODEL_PATH` and `DRAFT_MODEL_PATH` or
+  matching CLI flags. It does not pass `--use-fake-model-runner` and exits
+  before running if model paths are absent.
+- The generated smoke config uses 4 requests, 8 output tokens per request,
+  fixed seed `20260625`, virtual heterogeneous devices, nonzero virtual
+  communication latency, `server_only.batch_size=1`, SpecEdge proactive
+  drafting enabled, and DiP-SD `paper_exact` optimizer settings.
+- The verifier checks required output files, request completion, no pending
+  state, no OOM/NaN/traceback patterns, greedy equivalence against
+  `target_only`, real-runner manifests, target verification events, event-time
+  monotonicity, resource non-overlap, server-only batch size, SpecEdge
+  proactive drafting, DiP-SD optimizer assignment/per-request draft lengths, and
+  same-epoch DiP-SD plans preceding realized acceptance results.
+- The summary is written to `outputs/real_model_smoke/summary.md` on real runs
+  and includes model names, request count, committed/drafted/verified/accepted/
+  wasted tokens, acceptance ratio, finish time, GPU peak memory if available,
+  and caveats.
+
+### Live Run Status
+
+- `bash scripts/run_real_model_smoke.sh` was executed without model paths and
+  failed intentionally with a usage message requiring `TARGET_MODEL_PATH` and
+  `DRAFT_MODEL_PATH`; no fake runner fallback occurred.
+- A CPU probe with `sshleifer/tiny-gpt2` could prepare the smoke config, but the
+  current environment lacks `torch`, so the real `HuggingFaceModelRunner` cannot
+  load any model here.
+- No correctness check was weakened to bypass the missing runtime dependency.
+
+### Commands And Results
+
+- `pytest -q tests/test_real_model_smoke.py` -> 3 passed.
+- `pytest -q tests/test_real_model_smoke.py tests/test_baseline_trace_runner.py tests/test_cli_smoke.py` -> 11 passed.
+- `bash scripts/run_real_model_smoke.sh` -> exit 2 with explicit missing
+  `TARGET_MODEL_PATH`/`DRAFT_MODEL_PATH`.
+- `python3 -c "import torch, transformers"` -> `ModuleNotFoundError: No module
+  named 'torch'`.
+- `pytest -q` -> 180 passed.
+
+### Deviations Remaining
+
+- Baseline smoke readiness is not yet achieved in this environment because a
+  real target model, real drafter model, and installed `torch`/`transformers`
+  runtime are required to execute `scripts/run_real_model_smoke.sh` end to end.
+- GPU peak memory is reported as `n/a` unless the run environment supplies or
+  records a value in the generated run manifest.
 
 ## M20 Baseline Event Semantics Validation
 

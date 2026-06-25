@@ -46,6 +46,16 @@ one-unverified-segment-per-request, SpecEdge proactive success/failure
 alignment, shared token accounting, resource non-overlap, event time
 well-formedness, and legacy alias canonicalization.
 
+Real-model smoke update: `scripts/run_real_model_smoke.sh` and
+`scripts/real_model_smoke.py` now provide a small real-runner smoke harness for
+`target_only`, `server_only_linear`, `specedge_linear`, and `dip_sd`. The
+harness requires explicit target/drafter model paths, never falls back to the
+fake model runner, and verifies greedy equivalence, real target verification
+events, pending-state cleanup, event/resource invariants, SpecEdge proactive
+drafting, and DiP-SD optimizer trace evidence. A live smoke run is still
+environment-blocked here because no model paths were provided and `torch` is not
+installed.
+
 ## 1. Executive Summary
 
 | Area | Verdict | Paper-experiment impact |
@@ -57,10 +67,13 @@ well-formedness, and legacy alias canonicalization.
 | `specedge_tree` | PASS with caveat | Tree proactive alignment is trace-ready for the local `specexec_approx` implementation; exact official tree-kernel fidelity is not claimed. |
 | `dip_sd` / DiP-SD (Online Adaptation) | PASS | Paper-level batch-count, assignment, per-user draft-length optimization and optimizer-controlled event simulation are implemented inside the online epoch-barrier framework. |
 | Shared correctness | PASS | Canonical methods now have token-accounting, resource-overlap, event-time, greedy-equality, and no-pending-state invariant tests. |
+| Real-model smoke harness | HARNESS PASS / LIVE RUN BLOCKED | Real-runner script and verifier are present and tested; current environment lacks explicit model paths and `torch`, so no end-to-end real model result is claimed. |
 | Legacy aliases | PASS | `sync_batch_sd`, `SpecEdge`, and `server_only` now warn and strictly map to `dip_sd`, `specedge_tree`, and `server_only_tree`; generated detail artifacts use canonical labels. |
 
 Remaining engineering work is concentrated in optional true multi-request
-server-only batching and any future exact upstream SpecEdge tree-kernel replay.
+server-only batching, any future exact upstream SpecEdge tree-kernel replay, and
+executing the new real-model smoke harness in an environment with installed
+model dependencies and explicit target/drafter model paths.
 
 ## 2. Contract-to-Code Matrix
 
