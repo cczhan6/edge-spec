@@ -285,14 +285,14 @@ pytest -q
 
 **Completion conditions**
 
-- [ ] Ensure optimizer assignment controls batch membership.
-- [ ] Ensure per-user optimized draft lengths control drafting.
-- [ ] Preserve batch readiness, slow-member blocking, batch order, real batch
+- [x] Ensure optimizer assignment controls batch membership.
+- [x] Ensure per-user optimized draft lengths control drafting.
+- [x] Preserve batch readiness, slow-member blocking, batch order, real batch
       verification, and per-request verification barriers.
-- [ ] Validate trace span against the optimizer model or record bounded modeling
+- [x] Validate trace span against the optimizer model or record bounded modeling
       error.
-- [ ] Add event-trace tests for optimizer-controlled execution.
-- [ ] Update status and commit.
+- [x] Add event-trace tests for optimizer-controlled execution.
+- [x] Update status and commit.
 
 **Verification commands**
 

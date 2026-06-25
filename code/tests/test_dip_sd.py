@@ -186,22 +186,224 @@ class DipSDTest(unittest.TestCase):
 
         self.assertLessEqual(low.draft_lengths[0], high.draft_lengths[0])
 
-        config, _, workload = small_config(num_requests=1, output_len=6)
-        config["dip_sd"]["batch_count"] = 1
-        config["dip_sd"]["min_draft_length"] = 1
-        config["dip_sd"]["max_draft_length"] = 4
-        config["drafter_profiles"]["small"]["acceptance_prior"] = 0.95
+        low_config, _, low_workload = small_config(num_requests=1, output_len=6)
+        low_config["dip_sd"]["batch_count"] = 1
+        low_config["dip_sd"]["min_draft_length"] = 1
+        low_config["dip_sd"]["max_draft_length"] = 4
+        low_config["drafter_profiles"]["small"]["acceptance_prior"] = 0.1
+        low_result = Simulator(
+            low_config,
+            rejecting_model_runner(),
+            low_workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+        low_first_plan = first_event(low_result, "dip_sd_epoch_plan")
+
+        high_config, _, high_workload = small_config(num_requests=1, output_len=6)
+        high_config["dip_sd"]["batch_count"] = 1
+        high_config["dip_sd"]["min_draft_length"] = 1
+        high_config["dip_sd"]["max_draft_length"] = 4
+        high_config["drafter_profiles"]["small"]["acceptance_prior"] = 0.95
+        high_result = Simulator(
+            high_config,
+            rejecting_model_runner(),
+            high_workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+        high_first_plan = first_event(high_result, "dip_sd_epoch_plan")
+
+        self.assertEqual(high_first_plan["optimizer"], "paper_exact")
+        self.assertLessEqual(
+            low_first_plan["draft_lengths"][0],
+            high_first_plan["draft_lengths"][0],
+        )
+
+    def test_dip_sd_trace_uses_optimizer_batch_assignment(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=3, output_len=6)
+
         result = Simulator(
             config,
-            rejecting_model_runner(),
+            accepting_model_runner(),
             workload,
             "combined_strong_heterogeneous",
             "dip_sd",
         ).run()
-        first_plan = next(event for event in result.event_trace if event["event"] == "dip_sd_epoch_plan")
 
-        self.assertEqual(first_plan["optimizer"], "paper_exact")
-        self.assertEqual(first_plan["draft_lengths"][0], high.draft_lengths[0])
+        plan = first_event(result, "dip_sd_epoch_plan")
+        verifies = epoch_events(result, "dip_sd_batch_verify", 0)
+        self.assertEqual(len(verifies), len(plan["batches"]))
+        for event in verifies:
+            batch_index = event["batch_index"]
+            self.assertEqual(event["request_ids"], plan["batches"][batch_index])
+            self.assertEqual(event["optimizer_batch"], plan["batches"][batch_index])
+            for request_id in event["request_ids"]:
+                self.assertEqual(plan["assignment"][request_id], batch_index)
+
+    def test_dip_sd_trace_uses_per_request_draft_lengths(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=3, output_len=8)
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+
+        plan = first_event(result, "dip_sd_epoch_plan")
+        drafts = epoch_events(result, "dip_sd_draft", 0)
+        self.assertEqual(len(drafts), len(plan["draft_lengths"]))
+        for event in drafts:
+            self.assertEqual(
+                event["scheduled_gamma"],
+                plan["draft_lengths"][event["request_id"]],
+            )
+
+    def test_dip_sd_slow_member_blocks_assigned_batch(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=3, output_len=6)
+        split_heterogeneous_devices(config, draft_rates=(1000, 1, 1000))
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+
+        drafts = {
+            event["segment_id"]: event
+            for event in epoch_events(result, "dip_sd_draft", 0)
+        }
+        multi_request_verify = next(
+            event
+            for event in epoch_events(result, "dip_sd_batch_verify", 0)
+            if event["batch_size"] > 1
+        )
+        member_ready_times = [
+            drafts[segment_id]["finish_time_ms"] + drafts[segment_id]["uplink_ms"]
+            for segment_id in multi_request_verify["segment_ids"]
+        ]
+
+        self.assertGreater(max(member_ready_times), min(member_ready_times))
+        self.assertGreaterEqual(
+            multi_request_verify["start_time_ms"],
+            max(member_ready_times),
+        )
+
+    def test_dip_sd_other_batches_overlap_drafting(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=3, output_len=6)
+        split_heterogeneous_devices(config, draft_rates=(1000, 1, 1000))
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+
+        first_verify = epoch_events(result, "dip_sd_batch_verify", 0)[0]
+        later_batch_drafts = [
+            event
+            for event in epoch_events(result, "dip_sd_draft", 0)
+            if event["batch_index"] > first_verify["batch_index"]
+        ]
+
+        self.assertTrue(
+            any(
+                event["start_time_ms"] < first_verify["finish_time_ms"]
+                and event["finish_time_ms"] > first_verify["start_time_ms"]
+                for event in later_batch_drafts
+            )
+        )
+
+    def test_dip_sd_verification_follows_paper_batch_order(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=3, output_len=6)
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+
+        verifies = epoch_events(result, "dip_sd_batch_verify", 0)
+        self.assertEqual(
+            [event["batch_index"] for event in verifies],
+            list(range(len(verifies))),
+        )
+        for previous, current in zip(verifies, verifies[1:]):
+            self.assertGreaterEqual(
+                current["start_time_ms"],
+                previous["finish_time_ms"],
+            )
+
+    def test_dip_sd_request_waits_for_verification_before_redraft(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=1, output_len=6)
+        config["dip_sd"]["batch_count"] = 1
+        config["dip_sd"]["max_batch_size"] = 1
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+
+        drafts = [event for event in result.event_trace if event["event"] == "dip_sd_draft"]
+        results = [event for event in result.event_trace if event["event"] == "dip_sd_result"]
+        self.assertGreater(len(drafts), 1)
+        for previous_result, next_draft in zip(results, drafts[1:]):
+            self.assertGreaterEqual(
+                next_draft["start_time_ms"],
+                previous_result["finish_time_ms"],
+            )
+
+    def test_dip_sd_batch_verification_contains_multiple_requests(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=3, output_len=6)
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+
+        self.assertTrue(
+            any(
+                event["batch_size"] > 1
+                for event in epoch_events(result, "dip_sd_batch_verify", 0)
+            )
+        )
+
+    def test_dip_sd_trace_span_matches_optimizer_model(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=3, output_len=6)
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+
+        plan = first_event(result, "dip_sd_epoch_plan")
+        verifies = epoch_events(result, "dip_sd_batch_verify", 0)
+        actual_verify_stage_span = (
+            verifies[-1]["finish_time_ms"] - verifies[0]["start_time_ms"]
+        )
+
+        self.assertAlmostEqual(
+            actual_verify_stage_span,
+            plan["pipeline_span"],
+            delta=1e-3,
+        )
 
     def test_request_waits_for_sync_before_redraft(self) -> None:
         config, _, workload = small_config(num_requests=1, output_len=6)
@@ -314,6 +516,60 @@ class DipSDTest(unittest.TestCase):
                 [request.generated_ids for request in dip_sd.requests],
                 [request.generated_ids for request in target.requests],
             )
+
+
+def dip_sd_trace_config(
+    *,
+    num_requests: int,
+    output_len: int,
+) -> tuple[dict, object, list]:
+    config, model_runner, workload = small_config(
+        num_requests=num_requests,
+        output_len=output_len,
+    )
+    config["dip_sd"]["batch_count"] = 2
+    config["dip_sd"]["draft_length"] = 1
+    config["dip_sd"]["min_draft_length"] = 1
+    config["dip_sd"]["max_draft_length"] = 3
+    config["dip_sd"]["max_batch_size"] = 2
+    config["edge"]["verify_startup_ms"] = 1
+    config["edge"]["target_only_token_rate_tok_s"] = 1_000_000_000_000
+    config["network"]["packet_header_bytes"] = 0
+    config["network"]["packet_token_bytes"] = 0
+    for pool in config["device_pools"].values():
+        for template in pool["templates"].values():
+            template["draft_startup_ms"] = 0
+            template["draft_token_rate_tok_s"] = 1000
+            template["uplink_mbps"] = 1000
+            template["downlink_mbps"] = 1000
+            template["rtt_ms"] = 0
+            template["jitter_ms"] = 0
+    return config, model_runner, workload
+
+
+def split_heterogeneous_devices(
+    config: dict,
+    *,
+    draft_rates: tuple[int, int, int],
+) -> None:
+    templates = config["device_pools"]["heterogeneous"]["templates"]
+    for template in templates.values():
+        template["count"] = 0
+    for name, draft_rate in zip(("low_end", "mid_end", "high_end"), draft_rates):
+        templates[name]["count"] = 1
+        templates[name]["draft_token_rate_tok_s"] = draft_rate
+
+
+def first_event(result, event_name: str) -> dict:
+    return next(event for event in result.event_trace if event["event"] == event_name)
+
+
+def epoch_events(result, event_name: str, epoch: int) -> list[dict]:
+    return [
+        event
+        for event in result.event_trace
+        if event["event"] == event_name and event["epoch"] == epoch
+    ]
 
 
 def paper_user(

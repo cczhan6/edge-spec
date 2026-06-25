@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M16 complete
+Current milestone: M17 complete
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -14,9 +14,10 @@ Current milestone: M16 complete
 | M7 Shared tree drafting and verification | complete | `a99b92a` | `pytest -q tests/test_server_only_tree.py tests/test_specedge_tree.py tests/test_linear_sd_core.py` -> 13 passed; `pytest -q` -> 127 passed |
 | M8 Server-only-Tree | complete | `2605beb` | `pytest -q tests/test_server_only_tree.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 131 passed |
 | M9 SpecEdge-Tree | complete | `ab0ab57` | `pytest -q tests/test_specedge_tree.py tests/test_server_only_tree.py tests/test_target_only.py` -> 21 passed; `pytest -q` -> 136 passed |
-| M10 Regression and cleanup | complete | this commit | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 137 passed; method-specific pytest 49 passed; no prefill grep matches |
-| M15 DiP-SD paper-to-code reproduction spec | complete | this commit | `git diff --check` -> passed; `pytest -q tests/test_dip_sd.py` -> 9 passed |
-| M16 Full DiP-SD paper optimizer | complete | this commit | `pytest -q tests/test_dip_sd.py` -> 16 passed; `pytest -q` -> 144 passed |
+| M10 Regression and cleanup | complete | `46065c6` | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 137 passed; method-specific pytest 49 passed; no prefill grep matches |
+| M15 DiP-SD paper-to-code reproduction spec | complete | `f052b0e` | `git diff --check` -> passed; `pytest -q tests/test_dip_sd.py` -> 9 passed |
+| M16 Full DiP-SD paper optimizer | complete | `07bc84c` | `pytest -q tests/test_dip_sd.py` -> 16 passed; `pytest -q` -> 144 passed |
+| M17 DiP-SD optimizer simulation integration | complete | this commit | `pytest -q tests/test_dip_sd.py` -> 24 passed; `pytest -q` -> 152 passed |
 
 ## M15 DiP-SD Paper-To-Code Reproduction Spec
 
@@ -114,6 +115,58 @@ Current milestone: M16 complete
 - `dip_sd_greedy` remains registered until M18 public interface cleanup.
 - Event trace does not yet prove optimizer assignment/draft lengths control
   execution; planned for M17.
+
+## M17 DiP-SD Optimizer Simulation Integration
+
+### Completion Conditions
+
+- Canonical `dip_sd` now builds a `DipSDProblem` per active epoch and calls
+  `optimize_dip_sd` directly.
+- Optimizer assignment controls runtime batch membership.
+- Optimizer per-request draft lengths control actual local drafting.
+- Batch verification trace records optimizer batch, request ids, ready-time
+  model, verify-time model, objective, and diagnostics.
+- Per-request redraft is blocked until the previous verification result arrives
+  and the next epoch barrier is reached.
+- Batch readiness uses the slowest member's local draft/upload arrival.
+- Other batches can draft while an earlier ordered batch is verifying.
+- Verification follows optimizer batch order and supports true multi-request
+  batch verification.
+- Causal acceptance estimates are updated after verification and clamped into
+  the paper optimizer's open interval `(0, 1)`; the optimizer still receives no
+  future target outcomes.
+- Added trace-level tests for assignment, draft lengths, slow-member blocking,
+  cross-batch overlap, ordered verification, redraft barriers, multi-request
+  verification, and optimizer span.
+
+### Changed Files
+
+- Updated `src/simulator.py`.
+- Updated `tests/test_dip_sd.py`.
+- Updated `docs/baseline_implementation_plan.md`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_dip_sd.py` before final fixes -> 15 passed, 1 failed;
+  the failure showed the old test still compared canonical simulation against
+  the M16 simplified compatibility wrapper.
+- `pytest -q tests/test_dip_sd.py` after adding trace tests and acceptance
+  estimator feedback -> 14 passed, 10 failed; failures showed all-accept or
+  all-reject causal estimates could become `1.0` or `0.0`, outside the paper
+  optimizer's required open interval.
+- `pytest -q tests/test_dip_sd.py` after epsilon-clamping causal estimates ->
+  24 passed.
+- `pytest -q` -> 152 passed.
+
+### Deviations Remaining
+
+- `dip_sd_greedy` remains registered as a temporary fixed-pipeline method until
+  M18 public interface cleanup.
+- The event trace validates optimizer `S` against the ordered verification-stage
+  span. Full epoch wall-clock additionally includes warm-up/drain and epoch
+  barrier time, which is intentionally treated as bounded online-adaptation
+  overhead rather than a paper optimizer objective term.
 
 ## M0 Audit Existing Code vs Contract
 

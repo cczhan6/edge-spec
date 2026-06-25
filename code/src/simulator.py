@@ -8,7 +8,13 @@ from typing import Any, Callable, Sequence
 
 from src.communication import network_delay_ms
 from src.config import build_devices
-from src.dip_sd import build_fixed_epoch_plan, optimize_epoch_plan
+from src.dip_sd import (
+    DipSDModelProfile,
+    DipSDProblem,
+    DipSDUser,
+    build_fixed_epoch_plan,
+    optimize_dip_sd,
+)
 from src.entities import (
     ACTIVE_SEGMENT_STATUSES,
     FINAL_SEGMENT_STATUSES,
@@ -233,16 +239,8 @@ class Simulator:
                 continue
 
             if self.spec.name == "dip_sd":
-                plan = optimize_epoch_plan(
-                    active,
-                    acceptance_estimates={
-                        request_id: self.devices[self.requests[request_id].device_id].acceptance_prior
-                        for request_id in active
-                    },
-                    max_batch_count=int(dip_config["batch_count"]),
-                    min_draft_length=int(dip_config["min_draft_length"]),
-                    max_draft_length=int(dip_config["max_draft_length"]),
-                    max_batch_size=int(dip_config["max_batch_size"]),
+                plan = optimize_dip_sd(
+                    self._build_dip_sd_problem(active, epoch_index)
                 )
             else:
                 plan = build_fixed_epoch_plan(
@@ -261,10 +259,17 @@ class Simulator:
                     "time_ms": now_ms,
                     "batches": [list(batch) for batch in plan.batches],
                     "draft_lengths": dict(plan.draft_lengths),
+                    "assignment": dict(plan.assignment),
                     "optimizer": plan.optimizer,
                     "objective": plan.objective,
                     "expected_useful_tokens": plan.expected_useful_tokens,
                     "pipeline_span": plan.pipeline_span,
+                    "batch_ready_times": list(plan.batch_ready_times),
+                    "verify_times": list(plan.verify_times),
+                    "stage_durations": list(plan.stage_durations),
+                    "max_draft_lengths": list(plan.max_draft_lengths),
+                    "max_prefix_lengths": list(plan.max_prefix_lengths),
+                    "diagnostics": list(plan.diagnostics),
                 }
             )
             epoch_result_arrivals: list[float] = []
@@ -281,6 +286,7 @@ class Simulator:
                     prefix_ids = request.prompt_ids + request.generated_ids
                     draft_len = min(plan.draft_lengths[request_id], remaining)
                     draft_start_ms = max(
+                        now_ms,
                         request_ready_ms[request_id],
                         request.arrival_time_ms,
                     )
@@ -368,7 +374,20 @@ class Simulator:
                         "epoch": epoch_index,
                         "batch_index": batch_index,
                         "segment_ids": [segment.segment_id for segment in segments],
+                        "request_ids": [segment.request_id for segment in segments],
                         "batch_size": len(segments),
+                        "optimizer_batch": list(batch),
+                        "optimizer_pipeline_span": plan.pipeline_span,
+                        "optimizer_batch_ready_time": (
+                            plan.batch_ready_times[batch_index]
+                            if batch_index < len(plan.batch_ready_times)
+                            else None
+                        ),
+                        "optimizer_verify_time": (
+                            plan.verify_times[batch_index]
+                            if batch_index < len(plan.verify_times)
+                            else None
+                        ),
                         "start_time_ms": verify_start_ms,
                         "finish_time_ms": verify_done_ms,
                         "compute_ms": verify_ms,
@@ -387,6 +406,11 @@ class Simulator:
                     segment.status = "rejected" if result.rejected else "accepted"
                     request.accepted_tokens += segment.accepted_count
                     self.device_runtimes[segment.device_id].accepted_draft_tokens += segment.accepted_count
+                    self.acceptance.observe(
+                        request.request_id,
+                        segment.accepted_count,
+                        segment.proposed_count,
+                    )
                     if result.rejected:
                         request.rejected_count += 1
                         request.rollback_count += 1
@@ -466,6 +490,54 @@ class Simulator:
             phase_waiting_time_ms=self._phase_waiting_time_ms,
             lane_queue_wait_times_ms=self._lane_queue_wait_times_ms,
             event_trace=self._trace,
+        )
+
+    def _build_dip_sd_problem(
+        self,
+        active_request_ids: Sequence[int],
+        epoch_index: int,
+    ) -> DipSDProblem:
+        dip_config = self.config["dip_sd"]
+        edge = self.config["edge"]
+        users: list[DipSDUser] = []
+        for request_id in sorted(active_request_ids):
+            request = self.requests[request_id]
+            device = self.devices[request.device_id]
+            max_payload_bytes = self._payload_bytes(int(dip_config["max_draft_length"]))
+            communication_latency_ms = self._network_delay_ms(
+                device,
+                "uplink",
+                f"dip-sd-plan:{epoch_index}:{request_id}",
+                max_payload_bytes,
+            )
+            acceptance_estimate = self.acceptance.estimate(
+                request_id,
+                device.acceptance_prior,
+            )
+            users.append(
+                DipSDUser(
+                    request_id=request_id,
+                    prefix_length=len(request.prompt_ids) + len(request.generated_ids),
+                    acceptance_estimate=max(1e-6, min(0.999999, acceptance_estimate)),
+                    communication_latency_ms=communication_latency_ms,
+                    draft_latency_scale=0.0,
+                    draft_latency_overhead_ms=1000.0 / device.draft_token_rate_tok_s,
+                    draft_model=DipSDModelProfile(),
+                )
+            )
+        return DipSDProblem(
+            users=tuple(users),
+            target_model=DipSDModelProfile(),
+            target_latency_scale=0.0,
+            target_latency_overhead_ms=float(edge["verify_startup_ms"]),
+            target_memory_cap=float(dip_config.get("target_memory_cap", float("inf"))),
+            min_draft_length=int(dip_config["min_draft_length"]),
+            max_draft_length=int(dip_config["max_draft_length"]),
+            initial_draft_length=int(
+                dip_config.get("initial_draft_length", dip_config["draft_length"])
+            ),
+            max_batch_size=int(dip_config["max_batch_size"]),
+            max_batch_count=int(dip_config["batch_count"]),
         )
 
     def _batch_flush_time_ms(self) -> float:
