@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M10 complete
+Current milestone: M15 complete
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -15,6 +15,64 @@ Current milestone: M10 complete
 | M8 Server-only-Tree | complete | `2605beb` | `pytest -q tests/test_server_only_tree.py tests/test_target_only.py` -> 13 passed; `pytest -q` -> 131 passed |
 | M9 SpecEdge-Tree | complete | `ab0ab57` | `pytest -q tests/test_specedge_tree.py tests/test_server_only_tree.py tests/test_target_only.py` -> 21 passed; `pytest -q` -> 136 passed |
 | M10 Regression and cleanup | complete | this commit | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 137 passed; method-specific pytest 49 passed; no prefill grep matches |
+| M15 DiP-SD paper-to-code reproduction spec | complete | this commit | `git diff --check` -> passed; `pytest -q tests/test_dip_sd.py` -> 9 passed |
+
+## M15 DiP-SD Paper-To-Code Reproduction Spec
+
+### Completion Conditions
+
+- Re-read the DiP-SD paper through arXiv HTML and extracted formulas/algorithm
+  steps from arXiv:2604.20919v1.
+- Re-audited `src/dip_sd.py`, `src/simulator.py` DiP-SD path, `src/methods.py`,
+  `configs/default.yaml`, `tests/test_dip_sd.py`, and M5/M6 commits.
+- Created `docs/dip_sd_reproduction_spec.md`.
+- Added M15-M18 continuation milestones to `docs/baseline_implementation_plan.md`.
+- Confirmed canonical `dip_sd` must mean the original paper method; static,
+  greedy, or heuristic substitutes are not accepted public baselines.
+- Re-stated current implementation gaps before M16.
+
+### Changed Files
+
+- Added `docs/baseline_semantic_audit.md` to version control as the completed
+  semantic audit prerequisite for M15.
+- Added `docs/dip_sd_reproduction_spec.md`.
+- Updated `docs/baseline_implementation_plan.md`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `curl --max-time 20 -L -sS https://arxiv.org/html/2604.20919 > /tmp/dip.html`
+  -> success.
+- `curl --max-time 30 -L -sS https://arxiv.org/pdf/2604.20919 -o dip.pdf`
+  -> timed out with 0 bytes; not used because arXiv HTML exposed formula
+  `alttext` and Algorithm 1 text.
+- `git show --stat --oneline a7191db` -> inspected M5 fixed-pipeline commit.
+- `git show --stat --oneline 8e34dd5` -> inspected M6 optimizer commit.
+- `git diff --check` -> passed.
+- `pytest -q tests/test_dip_sd.py` -> 9 passed.
+
+### Paper-To-Code Decisions
+
+- `dip_sd` will not use the current static/heuristic planner as a public
+  substitute.
+- `dip_sd` must implement the paper variables `N`, `x_mn`, `l_m`, `b_n`,
+  `L_n`, `I_n`, `t_n^d`, `t_n^v`, `T_n`, and `S`.
+- `u_m(l_m)=(1-alpha_m^(l_m+1))/(1-alpha_m)` can be retained from current code.
+- Current `_assign_for_lengths`, `_pipeline_span`, and `_batch_span` are not
+  paper-equivalent and must be replaced for canonical `dip_sd`.
+- The optimizer must accept explicit profiled draft, communication, verify,
+  memory, prefix-length, and acceptance-estimate inputs.
+- Acceptance estimates must be offline/profile/past-only and the optimizer must
+  not receive future realized target acceptance.
+- Canonical `dip_sd` starts from a fixed cohort assumption. Any online wrapper
+  must be separately named `dip_sd_online`.
+
+### Deviations Remaining
+
+- Full DiP-SD optimizer is not implemented yet; planned for M16.
+- DiP-SD optimizer output is not yet connected to event simulation; planned for
+  M17.
+- Public method cleanup has not happened yet; planned for M18.
 
 ## M0 Audit Existing Code vs Contract
 

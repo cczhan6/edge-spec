@@ -241,6 +241,87 @@ bash scripts/verify_baseline_rebuild.sh
 pytest -q
 ```
 
+### M15: DiP-SD Paper-to-Code Reproduction Specification
+
+**Completion conditions**
+
+- [ ] Re-read the DiP-SD paper and current `src/dip_sd.py`, simulator path,
+      method registry, config, tests, and M5/M6 commits.
+- [ ] Create `docs/dip_sd_reproduction_spec.md`.
+- [ ] Map paper symbols, variables, formulas, constraints, and Algorithm 1 to
+      planned code functions.
+- [ ] Mark current implementation status for every paper requirement.
+- [ ] Record acceptance-estimate, fixed-cohort, and no-future-oracle rules.
+- [ ] Update status and commit documentation only.
+
+**Verification commands**
+
+```bash
+git diff --check
+pytest -q tests/test_dip_sd.py
+```
+
+### M16: Full DiP-SD Paper Optimizer
+
+**Completion conditions**
+
+- [ ] Replace heuristic `dip_sd` planning with the paper optimizer.
+- [ ] Implement batch-count scan, exact assignment subproblem, exact/equivalent
+      draft-length subproblem, Dinkelbach/equivalent fractional objective, and
+      deterministic tie-breaking.
+- [ ] Add feasibility diagnostics and explicit errors for infeasible input.
+- [ ] Ensure the optimizer cannot read future realized acceptance.
+- [ ] Add optimizer tests, including tiny-case brute-force oracle tests.
+- [ ] Update status and commit.
+
+**Verification commands**
+
+```bash
+pytest -q tests/test_dip_sd.py
+pytest -q
+```
+
+### M17: DiP-SD Optimizer Integration Into Event Simulation
+
+**Completion conditions**
+
+- [ ] Ensure optimizer assignment controls batch membership.
+- [ ] Ensure per-user optimized draft lengths control drafting.
+- [ ] Preserve batch readiness, slow-member blocking, batch order, real batch
+      verification, and per-request verification barriers.
+- [ ] Validate trace span against the optimizer model or record bounded modeling
+      error.
+- [ ] Add event-trace tests for optimizer-controlled execution.
+- [ ] Update status and commit.
+
+**Verification commands**
+
+```bash
+pytest -q tests/test_dip_sd.py
+pytest -q
+```
+
+### M18: DiP-SD Public Interface Cleanup and Final Acceptance
+
+**Completion conditions**
+
+- [ ] Public method registry exposes `dip_sd` only for the original paper method.
+- [ ] Remove `dip_sd_greedy`, `dip_sd_static`, and `dip_sd_heuristic` from
+      default/public method paths.
+- [ ] Update README, default config, contract, status, semantic audit,
+      experiment docs, run scripts, and verification script.
+- [ ] Run the baseline verification script, full pytest, and diff check.
+- [ ] Record remaining paper deviations, if any.
+- [ ] Update status and commit.
+
+**Verification commands**
+
+```bash
+bash scripts/verify_baseline_rebuild.sh
+pytest -q
+git diff --check
+```
+
 ## Cross-Milestone Rules
 
 - Each milestone must update `docs/baseline_status.md` before its commit.
