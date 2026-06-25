@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M15 complete
+Current milestone: M16 complete
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -16,6 +16,7 @@ Current milestone: M15 complete
 | M9 SpecEdge-Tree | complete | `ab0ab57` | `pytest -q tests/test_specedge_tree.py tests/test_server_only_tree.py tests/test_target_only.py` -> 21 passed; `pytest -q` -> 136 passed |
 | M10 Regression and cleanup | complete | this commit | `bash scripts/verify_baseline_rebuild.sh` -> `pytest -q` 137 passed; method-specific pytest 49 passed; no prefill grep matches |
 | M15 DiP-SD paper-to-code reproduction spec | complete | this commit | `git diff --check` -> passed; `pytest -q tests/test_dip_sd.py` -> 9 passed |
+| M16 Full DiP-SD paper optimizer | complete | this commit | `pytest -q tests/test_dip_sd.py` -> 16 passed; `pytest -q` -> 144 passed |
 
 ## M15 DiP-SD Paper-To-Code Reproduction Spec
 
@@ -67,12 +68,52 @@ Current milestone: M15 complete
 - Canonical `dip_sd` starts from a fixed cohort assumption. Any online wrapper
   must be separately named `dip_sd_online`.
 
-### Deviations Remaining
+### Deviations Remaining At M15 Exit
 
 - Full DiP-SD optimizer is not implemented yet; planned for M16.
 - DiP-SD optimizer output is not yet connected to event simulation; planned for
   M17.
 - Public method cleanup has not happened yet; planned for M18.
+
+## M16 Full DiP-SD Paper Optimizer
+
+### Completion Conditions
+
+- Added paper-level DiP-SD optimizer data model in `src/dip_sd.py`.
+- Implemented paper variables and objective terms:
+  `N`, `x_mn`, `l_m`, `b_n`, `L_n`, `I_n`, `tau_m^d`, `tau_m^c`,
+  `t_n^d`, `t_n^v`, `T_n`, `S`, `U(l)`, and `R=U/S`.
+- Replaced canonical `optimize_epoch_plan` wrapper with a call into the new
+  paper-equivalent optimizer instead of the old greedy assignment heuristic.
+- Implemented exact assignment subproblem for fixed draft lengths.
+- Implemented exact finite-domain Dinkelbach draft-length subproblem for fixed
+  assignment.
+- Implemented deterministic batch-count scan and tie-breaking.
+- Added explicit feasibility errors for invalid input and excessive optimizer
+  state spaces.
+- Added optimizer tests for feasibility, complete/disjoint assignment,
+  non-empty batches, draft-length bounds, determinism, manual objective,
+  brute-force tiny-case agreement, and no future-acceptance access.
+
+### Changed Files
+
+- Updated `src/dip_sd.py`.
+- Updated `tests/test_dip_sd.py`.
+- Updated `docs/baseline_status.md`.
+
+### Commands And Results
+
+- `pytest -q tests/test_dip_sd.py` -> 16 passed.
+- `pytest -q` -> 144 passed.
+
+### Deviations Remaining
+
+- The simulator still builds simplified optimizer inputs through the
+  compatibility wrapper; M17 must pass real prefix length, communication latency,
+  draft timing profile, verify timing profile, and memory cap inputs.
+- `dip_sd_greedy` remains registered until M18 public interface cleanup.
+- Event trace does not yet prove optimizer assignment/draft lengths control
+  execution; planned for M17.
 
 ## M0 Audit Existing Code vs Contract
 
