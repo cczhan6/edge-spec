@@ -112,6 +112,27 @@ class _ContextualLogits:
         return _FakeSelectedLogits(key, token_id)
 
 
+class _TreeRootCorruptLogits:
+    def __init__(self, input_ids, prefix_len, target_token_fn, corrupt_token):
+        self.input_ids = [list(row) for row in input_ids]
+        self.prefix_len = int(prefix_len)
+        self.target_token_fn = target_token_fn
+        self.corrupt_token = int(corrupt_token)
+
+    def __getitem__(self, key):
+        _FakeLogits.keys.append(key)
+        row, position, _ = key
+        if isinstance(row, slice):
+            row = 0
+        if isinstance(position, slice):
+            position = self.prefix_len - 1
+        if position == self.prefix_len - 1:
+            token_id = self.corrupt_token
+        else:
+            token_id = self.target_token_fn(self.input_ids[row][: position + 1])
+        return _FakeSelectedLogits(key, token_id)
+
+
 class _FakeTensor:
     def __init__(self, data, dtype=None):
         self.data = data
@@ -594,7 +615,7 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
                 [[7, 8], [7, 8]],
             )
 
-    def test_tree_verify_batch_uses_single_target_forward_with_tree_mask(self) -> None:
+    def test_tree_verify_batch_uses_safe_prefix_forward_and_tree_mask(self) -> None:
         modules = _fake_modules()
         _FakeModelFactory.dtypes = {
             "Qwen/Qwen2.5-7B-Instruct": modules["torch"].float16,
@@ -620,8 +641,12 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
             )
 
             target = _FakeModelFactory.models["Qwen/Qwen2.5-7B-Instruct"]
-            self.assertEqual(len(target.calls), 1)
-            call = target.calls[0]
+            self.assertEqual(len(target.calls), 2)
+            prefix_call = target.calls[0]
+            self.assertFalse(prefix_call["use_cache"])
+            self.assertEqual(prefix_call["input_ids"].shape, (1, 2))
+            self.assertNotIn("position_ids", prefix_call)
+            call = target.calls[1]
             self.assertFalse(call["use_cache"])
             self.assertEqual(call["input_ids"].shape, (1, 5))
             self.assertEqual(call["position_ids"].data[0], [0, 1, 2, 2, 3])
@@ -630,6 +655,62 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
             self.assertEqual(results[0].accepted_count, 2)
             self.assertEqual(results[0].emitted_ids, [7, 7, 7])
             self.assertFalse(results[0].rejected)
+
+    def test_tree_verify_batch_preserves_root_token_from_safe_prefix_forward(self) -> None:
+        prefix = [101, 102, 103]
+        token_by_context = {
+            tuple(prefix): 3838,
+            tuple(prefix + [3838]): 444,
+        }
+
+        def target_token(context):
+            return int(token_by_context.get(tuple(context), _default_target_token(context)))
+
+        modules = _fake_modules()
+        _FakeTokenizer.vocab_size = 5000
+        _FakeModelFactory.vocab_sizes = {
+            TARGET_MODEL_NAME: 5000,
+            SMALL_DRAFTER_NAME: 5000,
+            MEDIUM_DRAFTER_NAME: 5000,
+            LARGE_DRAFTER_NAME: 5000,
+        }
+
+        def logits_factory(kwargs):
+            if "position_ids" in kwargs:
+                return _TreeRootCorruptLogits(
+                    kwargs["input_ids"].data,
+                    len(prefix),
+                    target_token,
+                    corrupt_token=2610,
+                )
+            return _ContextualLogits(
+                kwargs["input_ids"].data,
+                kwargs.get("attention_mask").data if kwargs.get("attention_mask") else None,
+                target_token,
+            )
+
+        _FakeModelFactory.logits_factories = {
+            TARGET_MODEL_NAME: logits_factory,
+        }
+        try:
+            with patch.dict(sys.modules, modules):
+                model_runner = HuggingFaceModelRunner(load_config("configs/default.yaml"))
+                tree = DraftCandidateTree(
+                    prefix_ids=prefix,
+                    primary_ids=[3838],
+                    primary_node_ids=[1],
+                    nodes=[DraftTreeNode(1, None, 3838, 1)],
+                )
+
+                result = model_runner.verify_tree_batch(
+                    [SemanticTreeVerifyInput(prefix, tree)]
+                )[0]
+
+                self.assertEqual(result.accepted_count, 1)
+                self.assertEqual(result.committed_tokens, [3838, 444])
+                self.assertEqual(result.bonus_token, 444)
+        finally:
+            _FakeTokenizer.vocab_size = 32
 
     def test_single_tree_verify_uses_tree_forward_path(self) -> None:
         with patch.dict(sys.modules, _fake_modules()):
@@ -647,7 +728,7 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
             result = model_runner.verify_tree([1, 2], tree)
 
             target = _FakeModelFactory.models["Qwen/Qwen2.5-7B-Instruct"]
-            self.assertEqual(len(target.calls), 1)
+            self.assertEqual(len(target.calls), 2)
             self.assertEqual(result.accepted_count, 1)
             self.assertEqual(result.emitted_ids, [7, 7])
 

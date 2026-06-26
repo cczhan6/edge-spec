@@ -70,6 +70,26 @@ real-model semantics is not used as simulation time. DiP-SD therefore remains
 one logical batch verification even when the real runner internally uses
 multiple equal-length physical forwards.
 
+Real-model tree smoke update: `scripts/run_real_model_smoke.sh` now accepts an
+explicit `--methods` list while preserving the default four-method linear smoke.
+Tree smoke can run `target_only`, `server_only_tree`, and `specedge_tree` with
+the same real target model, drafter model, tokenizer, prompts, greedy config,
+output length, and GPU settings as the linear smoke. The verifier checks real
+tree candidate evidence, `specexec_approx` trace markers, server-only
+`batch_size=1`, SpecEdge proactive tree drafting and retain/invalidate evidence,
+no pending/unverified request state at finish, no OOM/NaN/traceback log pattern,
+and committed token trace equality with `target_only`. A live Qwen smoke run
+with `Qwen/Qwen2.5-7B-Instruct` target and `Qwen/Qwen2.5-0.5B-Instruct`
+drafter passed for `target_only`, `server_only_tree`, and `specedge_tree`.
+During this validation, tree verification exposed that reading root next-token
+logits from the tree 4D attention-mask forward can diverge from plain greedy
+prefix logits. `HuggingFaceModelRunner.verify_tree_batch` now obtains root
+tokens through the repaired `verify_batch(..., draft_ids=[])` path, including
+its `(prefix_length, draft_length)` grouping, then uses tree logits for
+tree-internal continuation verification. This preserves logical simulator
+latency and does not change tree scheduling, tree candidate semantics, proposed
+methods, or the `specexec_approx` approximation label.
+
 ## 1. Executive Summary
 
 | Area | Verdict | Paper-experiment impact |
@@ -81,7 +101,7 @@ multiple equal-length physical forwards.
 | `specedge_tree` | PASS with caveat | Tree proactive alignment is trace-ready for the local `specexec_approx` implementation; exact official tree-kernel fidelity is not claimed. |
 | `dip_sd` / DiP-SD (Online Adaptation) | PASS | Paper-level batch-count, assignment, per-user draft-length optimization and optimizer-controlled event simulation are implemented inside the online epoch-barrier framework. |
 | Shared correctness | PASS | Canonical methods now have token-accounting, resource-overlap, event-time, greedy-equality, and no-pending-state invariant tests. |
-| Real-model smoke harness | HARNESS PASS / LIVE RUN BLOCKED | Real-runner script and verifier are present and tested; current environment lacks explicit model paths and `torch`, so no end-to-end real model result is claimed. |
+| Real-model smoke harness | PASS | Real-runner script and verifier cover the default linear smoke and optional tree smoke; live Qwen runs passed for the default four methods and for `target_only`/`server_only_tree`/`specedge_tree`. |
 | Legacy aliases | PASS | `sync_batch_sd`, `SpecEdge`, and `server_only` now warn and strictly map to `dip_sd`, `specedge_tree`, and `server_only_tree`; generated detail artifacts use canonical labels. |
 
 Remaining engineering work is concentrated in optional true multi-request

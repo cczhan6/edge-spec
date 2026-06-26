@@ -491,6 +491,16 @@ class HuggingFaceModelRunner:
             _tree_with_prefix(item.draft_tree, item.prefix_ids)
             for item in requests
         ]
+        root_results = self.verify_batch(
+            [
+                SemanticVerifyInput(list(tree.prefix_ids), [])
+                for tree in packed_trees
+            ]
+        )
+        root_tokens = [
+            _single_committed_token(result)
+            for result in root_results
+        ]
         sequences = [
             list(tree.prefix_ids) + [node.token_id for node in tree.nodes]
             for tree in packed_trees
@@ -542,6 +552,7 @@ class HuggingFaceModelRunner:
                 tree,
                 self.vocab_size,
                 self.eos_token_id,
+                root_tokens[row],
             )
             for row, tree in enumerate(packed_trees)
         ]
@@ -1330,6 +1341,7 @@ def _verify_candidate_tree_from_logits(
     draft_tree: DraftCandidateTree,
     vocab_size: int,
     eos_token_id: int | None,
+    root_token: int | None = None,
 ) -> VerificationResult:
     children = _children_by_parent(draft_tree)
     prefix_len = len(draft_tree.prefix_ids)
@@ -1341,6 +1353,8 @@ def _verify_candidate_tree_from_logits(
     }
 
     def target_token(parent_id: int | None) -> int:
+        if parent_id is None and root_token is not None:
+            return int(root_token)
         position = prefix_len - 1 if parent_id is None else node_position_by_id[parent_id]
         return int(logits[row, position, :vocab_size].argmax(dim=-1).item())
 
@@ -1370,6 +1384,12 @@ def _verify_candidate_tree_from_logits(
             bonus = target_token(parent_id)
             emitted.append(bonus)
             return VerificationResult(accepted, emitted, False, bonus)
+
+
+def _single_committed_token(result: VerificationResult) -> int:
+    if len(result.committed_tokens) != 1:
+        raise RuntimeError("root token verification must return exactly one token")
+    return int(result.committed_tokens[0])
 
 
 def _new_tree_node(

@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M22 mixed-length real-model batch verification correctness
+Current milestone: M23 real-model tree baseline smoke coverage
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -23,6 +23,76 @@ Current milestone: M22 mixed-length real-model batch verification correctness
 | M20 Baseline event semantics validation | complete | this commit | `pytest -q` -> 176 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 176 passed; method-specific pytest 79 passed; static checks passed |
 | M21 Real-model baseline smoke harness | complete / live run blocked | this commit | `pytest -q tests/test_real_model_smoke.py tests/test_baseline_trace_runner.py tests/test_cli_smoke.py` -> 11 passed; `bash scripts/run_real_model_smoke.sh` -> blocked with explicit missing `TARGET_MODEL_PATH`/`DRAFT_MODEL_PATH`; `python3 -c "import torch"` -> `ModuleNotFoundError: No module named 'torch'`; `pytest -q` -> 180 passed |
 | M22 Mixed-length real-model batch verification | complete | this commit | real Qwen smoke -> `target_only`, `server_only_linear`, `specedge_linear`, `dip_sd` all `success=True`; `pytest -q` -> 187 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 187 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all trace methods `success=True`; `git diff --check` -> passed |
+| M23 Real-model tree baseline smoke coverage | complete | this commit | real Qwen tree smoke -> `target_only`, `server_only_tree`, `specedge_tree` all `success=True`; `pytest -q` -> 190 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 190 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all trace methods `success=True`; `git diff --check` -> passed |
+
+## M23 Real-Model Tree Baseline Smoke Coverage
+
+### Completion Conditions
+
+- Extended `scripts/run_real_model_smoke.sh` with `--methods` for explicit
+  comma-separated method selection. If speculative methods are selected without
+  `target_only`, the script adds `target_only` as the greedy reference.
+- Preserved the existing default real-model smoke set:
+  `target_only`, `server_only_linear`, `specedge_linear`, and `dip_sd`.
+- Extended `scripts/real_model_smoke.py` to verify selected method sets and to
+  accept the tree methods `server_only_tree` and `specedge_tree`.
+- Added tree-specific smoke checks for real tree candidates, `specexec_approx`
+  trace evidence, real tree verification events, `server_only_tree`
+  `batch_size=1`, SpecEdge proactive tree drafting, proactive
+  retain/invalidate evidence, no pending/unverified request state at finish,
+  no fake runner marker, no OOM/NaN/traceback log patterns, and committed token
+  trace equality with `target_only`.
+- Kept `specexec_approx` named as an approximation. No proposed method,
+  prefill scope, tree scheduling, or tree candidate semantics were changed.
+
+### Real-Model Tree Smoke Result
+
+- Command:
+  `PYTHON_BIN=/root/miniforge3/envs/edge-spec/bin/python TARGET_MODEL_PATH=Qwen/Qwen2.5-7B-Instruct DRAFT_MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct LOCAL_FILES_ONLY=true bash scripts/run_real_model_smoke.sh --methods target_only,server_only_tree,specedge_tree`
+  -> `target_only`, `server_only_tree`, and `specedge_tree` all
+  `success=True`.
+- `server_only_tree`: 4 requests, 32 committed tokens, 37 drafted tokens, 35
+  verified tokens, 25 accepted tokens, 3 wasted tokens, finish time
+  1926.000 ms.
+- `specedge_tree`: 4 requests, 32 committed tokens, 49 drafted tokens, 35
+  verified tokens, 23 accepted tokens, 22 wasted tokens, finish time
+  718.769 ms.
+- Both tree methods produced committed token traces equal to `target_only`.
+- Tree trace evidence appeared in both methods with `specexec_approx`,
+  retained tree candidates, and target tree verification nodes.
+- `specedge_tree` produced 7 proactive tree draft events and 7 proactive
+  invalidation/waste records in this run. No proactive retain/reuse hit occurred
+  in this particular Qwen smoke run.
+- No OOM/NaN/traceback pattern was found in the tree smoke logs.
+
+### Tree Verification Safety Note
+
+- The real tree smoke initially exposed the same visible failure shape as the
+  linear mixed-length bug for request 0: `target_only` generated
+  `[25, 330, 3838, ...]`, while tree verification committed
+  `[25, 330, 2610, ...]`.
+- The root cause was reading the root next-token logits from the tree 4D
+  attention-mask forward. `HuggingFaceModelRunner.verify_tree_batch` now obtains
+  each root token via the already repaired `verify_batch(..., draft_ids=[])`
+  path, which uses safe `(prefix_length, draft_length)` grouping, then uses tree
+  logits for tree-internal continuation verification.
+- This adds safe physical target forwards in the real Hugging Face runner only;
+  simulator verification latency remains the analytical logical-batch latency.
+
+### Commands And Results
+
+- `pytest -q tests/test_real_model_smoke.py tests/test_dssd_oracle.py` -> 23
+  passed.
+- `PYTHON_BIN=/root/miniforge3/envs/edge-spec/bin/python TARGET_MODEL_PATH=Qwen/Qwen2.5-7B-Instruct DRAFT_MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct LOCAL_FILES_ONLY=true bash scripts/run_real_model_smoke.sh --methods target_only,server_only_tree,specedge_tree`
+  -> `target_only`, `server_only_tree`, and `specedge_tree` all
+  `success=True`; committed token traces matched `target_only`.
+- `pytest -q` -> 190 passed.
+- `bash scripts/verify_baseline_rebuild.sh` -> full pytest 190 passed;
+  method-specific pytest 79 passed.
+- `bash scripts/run_baseline_trace.sh` -> `target_only`,
+  `server_only_linear`, `server_only_tree`, `specedge_linear`,
+  `specedge_tree`, and `dip_sd` all `success=True`.
+- `git diff --check` -> passed.
 
 ## M22 Mixed-Length Real-Model Batch Verification
 

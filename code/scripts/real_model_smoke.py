@@ -7,7 +7,7 @@ import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from scripts.baseline_trace import (
     _check_event_monotonicity,
@@ -30,6 +30,15 @@ REAL_MODEL_METHODS = (
     "dip_sd",
 )
 
+SUPPORTED_REAL_MODEL_METHODS = (
+    "target_only",
+    "server_only_linear",
+    "server_only_tree",
+    "specedge_linear",
+    "specedge_tree",
+    "dip_sd",
+)
+
 SCENARIO = "real_model_smoke"
 
 REQUIRED_REAL_FILES = (
@@ -47,7 +56,9 @@ REQUIRED_REAL_FILES = (
 
 VERIFY_EVENTS_BY_METHOD = {
     "server_only_linear": "server_only_verify",
+    "server_only_tree": "server_only_verify",
     "specedge_linear": "global_batch_verify",
+    "specedge_tree": "global_batch_verify",
     "dip_sd": "dip_sd_batch_verify",
 }
 
@@ -58,6 +69,28 @@ LOG_FAILURE_PATTERNS = (
     re.compile(r"\bnan\b", re.IGNORECASE),
     re.compile(r"^Traceback ", re.MULTILINE),
 )
+
+
+def parse_real_model_methods(methods: str | Sequence[str] | None) -> tuple[str, ...]:
+    if methods is None:
+        return REAL_MODEL_METHODS
+    raw_methods = methods.split(",") if isinstance(methods, str) else list(methods)
+    if not raw_methods or all(not str(method).strip() for method in raw_methods):
+        return REAL_MODEL_METHODS
+    selected: list[str] = []
+    for raw_method in raw_methods:
+        method = str(raw_method).strip()
+        if not method:
+            continue
+        if method not in SUPPORTED_REAL_MODEL_METHODS:
+            raise ValueError(f"unknown real-model smoke method: {method}")
+        if method not in selected:
+            selected.append(method)
+    if not selected:
+        return REAL_MODEL_METHODS
+    if "target_only" not in selected:
+        selected.insert(0, "target_only")
+    return tuple(selected)
 
 
 def prepare_real_model_inputs(
@@ -163,14 +196,16 @@ def verify_real_model_outputs(
     summary_path: str | Path,
     *,
     expected_requests: int = 4,
+    methods: str | Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     root_path = Path(root)
+    method_names = parse_real_model_methods(methods)
     method_data = {
         method: _load_method_outputs(root_path, method)
-        for method in REAL_MODEL_METHODS
+        for method in method_names
     }
     failures: list[str] = []
-    method_failures: dict[str, list[str]] = {method: [] for method in REAL_MODEL_METHODS}
+    method_failures: dict[str, list[str]] = {method: [] for method in method_names}
 
     for method, data in method_data.items():
         checks: list[str] = []
@@ -188,20 +223,22 @@ def verify_real_model_outputs(
 
     cross_checks = [
         *_check_outputs_equal_target(method_data),
-        *_check_server_only_batch_size(method_data["server_only_linear"]),
-        *_check_specedge_proactive(method_data["specedge_linear"]),
-        *_check_dip_sd_optimizer(method_data["dip_sd"]),
-        *_check_dip_sd_no_future_acceptance(method_data["dip_sd"]),
+        *_check_server_only_batch_size(method_data),
+        *_check_specedge_proactive(method_data),
+        *_check_tree_baseline_evidence(method_data),
     ]
+    if "dip_sd" in method_data:
+        cross_checks.extend(_check_dip_sd_optimizer(method_data["dip_sd"]))
+        cross_checks.extend(_check_dip_sd_no_future_acceptance(method_data["dip_sd"]))
     failures.extend(cross_checks)
     for failure in cross_checks:
-        for method in REAL_MODEL_METHODS:
+        for method in method_names:
             if failure.startswith(f"{method}:"):
                 method_failures[method].append(failure)
 
     summaries = [
         _summarize_method(method, method_data[method], method_failures[method])
-        for method in REAL_MODEL_METHODS
+        for method in method_names
     ]
     _write_summary(summary_path, summaries, failures)
     if failures:
@@ -493,22 +530,81 @@ def _check_outputs_equal_target(method_data: dict[str, dict[str, Any]]) -> list[
     return failures
 
 
-def _check_server_only_batch_size(data: dict[str, Any]) -> list[str]:
+def _check_server_only_batch_size(method_data: dict[str, dict[str, Any]]) -> list[str]:
     failures = []
-    for row in data["batches"]:
-        if row.get("event") == "server_only_verify" and _to_int(row.get("batch_size")) != 1:
-            failures.append(f"server_only_linear: observed batch_size={row.get('batch_size')}")
+    for method in ("server_only_linear", "server_only_tree"):
+        if method not in method_data:
+            continue
+        for row in method_data[method]["batches"]:
+            if row.get("event") == "server_only_verify" and _to_int(row.get("batch_size")) != 1:
+                failures.append(f"{method}: observed batch_size={row.get('batch_size')}")
     return failures
 
 
-def _check_specedge_proactive(data: dict[str, Any]) -> list[str]:
-    events = data["events"]
-    tokens = data["tokens"]
+def _check_specedge_proactive(method_data: dict[str, dict[str, Any]]) -> list[str]:
     failures = []
-    if not any(row.get("event") == "proactive_draft" for row in events):
-        failures.append("specedge_linear: no proactive_draft event")
-    if _sum_token_type(tokens, "proactive_drafted") <= 0:
-        failures.append("specedge_linear: no proactive_drafted token trace")
+    for method in ("specedge_linear", "specedge_tree"):
+        if method not in method_data:
+            continue
+        events = method_data[method]["events"]
+        tokens = method_data[method]["tokens"]
+        if not any(row.get("event") == "proactive_draft" for row in events):
+            failures.append(f"{method}: no proactive_draft event")
+        if _sum_token_type(tokens, "proactive_drafted") <= 0:
+            failures.append(f"{method}: no proactive_drafted token trace")
+    return failures
+
+
+def _check_tree_baseline_evidence(method_data: dict[str, dict[str, Any]]) -> list[str]:
+    failures = []
+    for method in ("server_only_tree", "specedge_tree"):
+        if method not in method_data:
+            continue
+        data = method_data[method]
+        events = data["events"]
+        batches = data["batches"]
+        tree_rows = [
+            row
+            for row in [*events, *batches]
+            if row.get("tree_strategy") == "specexec_approx"
+        ]
+        if not tree_rows:
+            failures.append(f"{method}: no specexec_approx tree evidence")
+        if not any(_to_int(row.get("retained_tree_nodes")) > 1 for row in tree_rows):
+            failures.append(f"{method}: no retained tree candidate evidence")
+        verify_event = VERIFY_EVENTS_BY_METHOD[method]
+        verify_rows = [
+            row
+            for row in [*events, *batches]
+            if row.get("event") == verify_event
+        ]
+        if not any(
+            row.get("tree_strategy") == "specexec_approx"
+            and _to_int(row.get("target_verify_tree_nodes")) > 1
+            for row in verify_rows
+        ):
+            failures.append(f"{method}: no real tree verification evidence")
+
+    if "specedge_tree" in method_data:
+        data = method_data["specedge_tree"]
+        proactive_rows = [
+            row for row in data["events"] if row.get("event") == "proactive_draft"
+        ]
+        if not any(row.get("tree_strategy") == "specexec_approx" for row in proactive_rows):
+            failures.append("specedge_tree: no proactive specexec_approx tree draft")
+        retained = any(
+            row.get("event") == "draft_compute"
+            and _truthy(row.get("proactive_used"))
+            and _to_int(row.get("proactive_reused_tokens")) > 0
+            for row in data["events"]
+        )
+        invalidated = any(
+            row.get("token_type") == "wasted"
+            and row.get("wasted_reason") == "proactive_alignment"
+            for row in data["tokens"]
+        )
+        if not (retained or invalidated):
+            failures.append("specedge_tree: no proactive retain/invalidate evidence")
     return failures
 
 
@@ -621,8 +717,12 @@ def _method_caveat(method: str, failures: list[str]) -> str:
         return "Greedy reference; no speculative verification events expected."
     if method == "server_only_linear":
         return "Server-only batch_size is fixed at 1."
+    if method == "server_only_tree":
+        return "Tree smoke keeps server_only batch_size=1 and specexec_approx candidates."
     if method == "specedge_linear":
         return "Linear SpecEdge smoke requires proactive_draft evidence."
+    if method == "specedge_tree":
+        return "Tree smoke requires specexec_approx proactive drafting; not upstream CUDA replay."
     if method == "dip_sd":
         return "Online DiP-SD smoke checks optimizer assignment and planned lengths."
     return ""
@@ -653,21 +753,33 @@ def _write_summary(path: str | Path, summaries: list[dict[str, Any]], failures: 
     if failures:
         lines.extend(f"- FAIL: {failure}" for failure in failures)
     else:
+        method_count = len(summaries)
+        has_server_only = any(row["method"].startswith("server_only") for row in summaries)
+        has_specedge = any(row["method"].startswith("specedge") for row in summaries)
+        has_tree = any(row["method"].endswith("_tree") for row in summaries)
+        has_dip = any(row["method"] == "dip_sd" for row in summaries)
         lines.extend(
             [
-                "- PASS: four methods completed all smoke requests.",
+                f"- PASS: {method_count} methods completed all smoke requests.",
                 "- PASS: speculative committed token traces satisfy greedy equivalence with target_only.",
                 "- PASS: manifests require HuggingFaceModelRunner and no fake runner flag.",
                 "- PASS: acceptance was produced by real target verification events.",
                 "- PASS: no request finishes with pending or unverified state.",
                 "- PASS: event times are monotonic and resource timelines do not overlap illegally.",
-                "- PASS: server_only_linear observed batch_size=1.",
-                "- PASS: specedge_linear contains proactive drafting.",
-                "- PASS: dip_sd contains optimizer assignment and per-request draft lengths.",
-                "- PASS: dip_sd epoch plans precede same-epoch draft/result acceptance observations.",
                 "- PASS: all required output files exist and are non-empty.",
             ]
         )
+        if has_server_only:
+            lines.append("- PASS: server-only smoke observed batch_size=1.")
+        if has_specedge:
+            lines.append("- PASS: SpecEdge smoke contains proactive drafting.")
+        if has_tree:
+            lines.append(
+                "- PASS: tree baselines use real tree candidates, specexec_approx verification, and proactive tree drafting where applicable."
+            )
+        if has_dip:
+            lines.append("- PASS: dip_sd contains optimizer assignment and per-request draft lengths.")
+            lines.append("- PASS: dip_sd epoch plans precede same-epoch draft/result acceptance observations.")
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -718,6 +830,12 @@ def _parse_json(value: Any) -> Any:
         return value
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _optional_bool(value: str | None) -> bool | None:
     if value is None:
         return None
@@ -749,7 +867,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     manifest = subparsers.add_parser("manifest")
     manifest.add_argument("--output-dir", required=True)
-    manifest.add_argument("--method", required=True, choices=REAL_MODEL_METHODS)
+    manifest.add_argument("--method", required=True, choices=SUPPORTED_REAL_MODEL_METHODS)
     manifest.add_argument("--command-text", required=True)
     manifest.add_argument("--return-code", required=True, type=int)
     manifest.add_argument("--config", required=True)
@@ -766,6 +884,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--root", default="outputs/real_model_smoke")
     verify.add_argument("--summary", default="outputs/real_model_smoke/summary.md")
     verify.add_argument("--expected-requests", type=int, default=4)
+    verify.add_argument("--methods")
     return parser
 
 
@@ -812,6 +931,7 @@ def main() -> None:
             args.root,
             args.summary,
             expected_requests=args.expected_requests,
+            methods=args.methods,
         )
         print(f"summary: {args.summary}")
         for row in summaries:

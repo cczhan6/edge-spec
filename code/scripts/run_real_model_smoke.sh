@@ -18,6 +18,7 @@ OUTPUT_TOKENS="${OUTPUT_TOKENS:-8}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-}"
 CACHE_DIR="${HF_CACHE_DIR:-}"
 MODEL_REVISION="${MODEL_REVISION:-}"
+METHODS="${REAL_MODEL_SMOKE_METHODS:-}"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -38,6 +39,10 @@ Options:
   --local-files-only BOOL  Pass model_runner.local_files_only
   --cache-dir PATH         Hugging Face cache_dir
   --revision REV           Hugging Face revision
+  --methods LIST           Comma-separated methods (default:
+                           target_only,server_only_linear,specedge_linear,dip_sd).
+                           target_only is added automatically as the greedy
+                           reference when omitted.
 
 This script never enables the fake runner. Missing model paths are a hard error
 rather than a fallback to deterministic traces.
@@ -94,6 +99,10 @@ while [[ $# -gt 0 ]]; do
       MODEL_REVISION="$2"
       shift 2
       ;;
+    --methods)
+      METHODS="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -143,8 +152,53 @@ fi
 CONFIG="${ROOT}/real_model_smoke_config.yaml"
 DATASET_PREPARED="${ROOT}/real_model_smoke_dataset.jsonl"
 SCENARIO="real_model_smoke"
-PHASE_ONE=(target_only server_only_linear)
-PHASE_TWO=(specedge_linear dip_sd)
+DEFAULT_METHODS=(target_only server_only_linear specedge_linear dip_sd)
+SUPPORTED_METHODS=(target_only server_only_linear server_only_tree specedge_linear specedge_tree dip_sd)
+
+contains_method() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    if [[ "${item}" == "${needle}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_method() {
+  local method="$1"
+  if contains_method "${method}" "${SUPPORTED_METHODS[@]}"; then
+    return 0
+  fi
+  printf 'Unknown real model smoke method: %s\n' "${method}" >&2
+  exit 2
+}
+
+SELECTED_METHODS=()
+if [[ -z "${METHODS}" ]]; then
+  SELECTED_METHODS=("${DEFAULT_METHODS[@]}")
+else
+  IFS=',' read -r -a RAW_METHODS <<< "${METHODS}"
+  for raw_method in "${RAW_METHODS[@]}"; do
+    method="${raw_method//[[:space:]]/}"
+    if [[ -z "${method}" ]]; then
+      continue
+    fi
+    validate_method "${method}"
+    if ! contains_method "${method}" "${SELECTED_METHODS[@]}"; then
+      SELECTED_METHODS+=("${method}")
+    fi
+  done
+  if [[ "${#SELECTED_METHODS[@]}" -eq 0 ]]; then
+    SELECTED_METHODS=("${DEFAULT_METHODS[@]}")
+  elif ! contains_method "target_only" "${SELECTED_METHODS[@]}"; then
+    SELECTED_METHODS=(target_only "${SELECTED_METHODS[@]}")
+  fi
+fi
+
+METHODS_CSV="$(IFS=','; printf '%s' "${SELECTED_METHODS[*]}")"
 
 write_manifest() {
   local method="$1"
@@ -216,36 +270,23 @@ skip_method() {
   write_manifest "${method}" "${method_dir}" "skipped" "125" "${log_path}" "${reason}"
 }
 
-phase_one_status=0
-for method in "${PHASE_ONE[@]}"; do
+run_status=0
+for method in "${SELECTED_METHODS[@]}"; do
   if ! run_method "${method}"; then
-    phase_one_status=1
-    break
+    run_status=1
   fi
 done
-
-phase_two_status=0
-if [[ "${phase_one_status}" -eq 0 ]]; then
-  for method in "${PHASE_TWO[@]}"; do
-    if ! run_method "${method}"; then
-      phase_two_status=1
-    fi
-  done
-else
-  for method in "${PHASE_TWO[@]}"; do
-    skip_method "${method}" "phase one target/server smoke failed"
-  done
-fi
 
 set +e
 "${PYTHON_BIN}" -m scripts.real_model_smoke verify \
   --root "${ROOT}" \
   --summary "${ROOT}/summary.md" \
-  --expected-requests "${NUM_REQUESTS}"
+  --expected-requests "${NUM_REQUESTS}" \
+  --methods "${METHODS_CSV}"
 verify_status=$?
 set -e
 
-if [[ "${phase_one_status}" -ne 0 || "${phase_two_status}" -ne 0 ]]; then
+if [[ "${run_status}" -ne 0 ]]; then
   exit 1
 fi
 exit "${verify_status}"
