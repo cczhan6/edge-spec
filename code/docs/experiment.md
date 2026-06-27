@@ -2,6 +2,11 @@
 
 本文档是稳定实验协议，说明如何用当前仿真器组织实验、比较方法、读取指标，并给出推荐的性能分析、消融实验和敏感性分析设置。单次 run 的数值解读不放在本文档中，应写入 `experiment_analysis_<RUN_ID>.md` 或 [latest_experiment_analysis.md](latest_experiment_analysis.md)。
 
+正式 baseline 的硬件职责、模型 commit、资源绑定、固定场景、指标计数和正确性门槛以
+[experiment_resource_contract.md](experiment_resource_contract.md) 为准。六个 canonical
+方法已通过 deterministic trace 和真实模型 greedy-equivalence smoke，但尚未完成 480 请求
+正式规模性能实验。
+
 ## 阅读方式
 
 | 目标 | 阅读位置 |
@@ -32,6 +37,12 @@
 
 `smoke` 和单元测试可使用 fake 模型推理器。正式实验应关闭 `USE_FAKE_MODEL_RUNNER`，
 加载真实 Hugging Face 模型。
+
+正式运行前先生成 `outputs/environment_manifest.json`，再对每个场景运行
+`scripts/audit_experiment_config.py` 并保留输出的 resolved config。审计器要求 canonical
+方法名、Server-only batch size 1、`specexec_approx` tree 标记、Poisson 在线到达、可用模型、
+分离的 target/drafter GPU、关闭 fake runner、显式 seed/请求数/输出长度/arrival rate 和
+毫秒时间单位；任一条件不满足即报错，不做静默回退。
 
 ## 2. 实验设置
 

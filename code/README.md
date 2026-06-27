@@ -11,10 +11,15 @@
 | 目标 | 文档 |
 |---|---|
 | 文档维护规则和阅读顺序 | [docs/README.md](docs/README.md) |
+| 正式 baseline 资源、模型、场景和度量合同 | [docs/experiment_resource_contract.md](docs/experiment_resource_contract.md) |
 | 实验口径、场景、方法和推荐实验 | [docs/experiment.md](docs/experiment.md) |
 | 输出文件和指标定义 | [docs/metric.md](docs/metric.md) |
 | 最近一次实验结果分析 | [docs/latest_experiment_analysis.md](docs/latest_experiment_analysis.md) |
 | 历史 run 分析 | `docs/experiment_analysis_<RUN_ID>.md` |
+
+六个 canonical baseline 已全部通过 deterministic trace 和真实模型
+greedy-equivalence smoke。当前尚未运行 480 请求的正式规模性能实验；smoke 数值不能作为
+论文性能结果。
 
 ## 核心口径
 
@@ -74,6 +79,22 @@ pip install -r requirements.txt
 | target | `Qwen/Qwen2.5-7B-Instruct` | `cuda:1` |
 
 宿主设备只影响真实语义计算的执行位置，不影响虚拟时间。若模型已在 Hugging Face cache 中，但网络或代理不稳定，可在配置的 `model_runner` 下设置 `local_files_only: true`，或运行时设置 `HF_HUB_OFFLINE=1`。
+
+正式运行前必须先采集环境并审计每个场景的完全解析配置：
+
+```bash
+python scripts/collect_experiment_environment.py \
+  --output outputs/environment_manifest.json
+
+python scripts/audit_experiment_config.py \
+  --config configs/default.yaml \
+  --scenario homogeneous \
+  --methods target_only server_only_linear server_only_tree \
+            specedge_linear specedge_tree dip_sd \
+  --resolved-config-out outputs/resolved_config_homogeneous.json
+```
+
+审计失败会直接退出，不会替换方法名、修改 batch/tree 设置、启用 fake runner 或回退模型。
 
 ## 运行
 

@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M23 real-model tree baseline smoke coverage
+Current milestone: M24 baseline experiment resource contract freeze
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -23,7 +23,23 @@ Current milestone: M23 real-model tree baseline smoke coverage
 | M20 Baseline event semantics validation | complete | this commit | `pytest -q` -> 176 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 176 passed; method-specific pytest 79 passed; static checks passed |
 | M21 Real-model baseline smoke harness | complete / live run blocked | this commit | `pytest -q tests/test_real_model_smoke.py tests/test_baseline_trace_runner.py tests/test_cli_smoke.py` -> 11 passed; `bash scripts/run_real_model_smoke.sh` -> blocked with explicit missing `TARGET_MODEL_PATH`/`DRAFT_MODEL_PATH`; `python3 -c "import torch"` -> `ModuleNotFoundError: No module named 'torch'`; `pytest -q` -> 180 passed |
 | M22 Mixed-length real-model batch verification | complete | this commit | real Qwen smoke -> `target_only`, `server_only_linear`, `specedge_linear`, `dip_sd` all `success=True`; `pytest -q` -> 187 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 187 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all trace methods `success=True`; `git diff --check` -> passed |
-| M23 Real-model tree baseline smoke coverage | complete | this commit | real Qwen tree smoke -> `target_only`, `server_only_tree`, `specedge_tree` all `success=True`; `pytest -q` -> 190 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 190 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all trace methods `success=True`; `git diff --check` -> passed |
+| M23 Real-model tree baseline smoke coverage | complete | `5a5a099` | real Qwen tree smoke -> `target_only`, `server_only_tree`, `specedge_tree` all `success=True`; `pytest -q` -> 190 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 190 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all trace methods `success=True`; `git diff --check` -> passed |
+| M24 Experiment resource contract freeze | complete | this commit | `pytest -q` -> 213 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 213 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all six trace methods `success=True`; no 480-request formal experiment run |
+
+## M24 Baseline Experiment Resource Contract Freeze
+
+- `docs/experiment_resource_contract.md` freezes canonical/display labels, physical GPU duties,
+  real-semantics/virtual-time boundaries, model revisions and residency, per-method resources,
+  the two Poisson scenarios, metric counting, and formal correctness gates.
+- `scripts/collect_experiment_environment.py` records Git, Python, PyTorch, Transformers, CUDA,
+  NVIDIA driver, GPU model, and GPU memory metadata in
+  `outputs/environment_manifest.json`.
+- `scripts/audit_experiment_config.py` rejects aliases, invalid batch/tree/arrival/model/device/
+  fake-runner/workload/time-unit settings and atomically exports the resolved config.
+- Across M22 and M23, all six canonical methods passed real-model greedy-equivalence smoke;
+  deterministic traces also pass for all six methods.
+- No formal-scale 480-request performance experiment has been run in M24. This milestone changes
+  no baseline or proposed-method implementation.
 
 ## M23 Real-Model Tree Baseline Smoke Coverage
 

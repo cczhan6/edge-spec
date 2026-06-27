@@ -1,6 +1,6 @@
 # Baseline Semantic Audit
 
-Date: 2026-06-25
+Date: 2026-06-27
 
 Scope: independent semantic audit of the completed `baseline-rebuild` worktree.
 This audit checks code paths, event flow, resource timelines, current docs, and
@@ -52,9 +52,8 @@ Real-model smoke update: `scripts/run_real_model_smoke.sh` and
 harness requires explicit target/drafter model paths, never falls back to the
 fake model runner, and verifies greedy equivalence, real target verification
 events, pending-state cleanup, event/resource invariants, SpecEdge proactive
-drafting, and DiP-SD optimizer trace evidence. A live smoke run is still
-environment-blocked here because no model paths were provided and `torch` is not
-installed.
+drafting, and DiP-SD optimizer trace evidence. A live Qwen run passed for all
+four methods.
 
 Mixed-length verification update: `HuggingFaceModelRunner.verify_batch`
 preserves the simulator's logical batch verification interface, but no longer
@@ -90,6 +89,13 @@ tree-internal continuation verification. This preserves logical simulator
 latency and does not change tree scheduling, tree candidate semantics, proposed
 methods, or the `specexec_approx` approximation label.
 
+Experiment-resource freeze update: the combined linear and tree smoke runs cover all six
+canonical methods, and all committed traces matched `target_only` greedy output. The formal
+resource/model/scenario/metric contract is now fixed in
+`docs/experiment_resource_contract.md`, with environment collection and fail-closed config
+auditing scripts. No formal-scale performance experiment has been completed; smoke timings are
+correctness evidence only.
+
 ## 1. Executive Summary
 
 | Area | Verdict | Paper-experiment impact |
@@ -104,10 +110,9 @@ methods, or the `specexec_approx` approximation label.
 | Real-model smoke harness | PASS | Real-runner script and verifier cover the default linear smoke and optional tree smoke; live Qwen runs passed for the default four methods and for `target_only`/`server_only_tree`/`specedge_tree`. |
 | Legacy aliases | PASS | `sync_batch_sd`, `SpecEdge`, and `server_only` now warn and strictly map to `dip_sd`, `specedge_tree`, and `server_only_tree`; generated detail artifacts use canonical labels. |
 
-Remaining engineering work is concentrated in optional true multi-request
-server-only batching, any future exact upstream SpecEdge tree-kernel replay, and
-executing the new real-model smoke harness in an environment with installed
-model dependencies and explicit target/drafter model paths.
+Remaining work is the audited formal-scale performance run, optional true multi-request
+server-only batching, and any future exact upstream SpecEdge tree-kernel replay. The completed
+real-model smoke is not a substitute for formal performance results.
 
 ## 2. Contract-to-Code Matrix
 

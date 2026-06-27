@@ -6,6 +6,16 @@ simulation:
   request_arrival: burst
   poisson_rate_per_s: 20
 
+experiment:
+  contract_version: 1
+  canonical_methods: ["target_only", "server_only_linear", "server_only_tree", "specedge_linear", "specedge_tree", "dip_sd"]
+  formal_online_scenarios: ["homogeneous", "combined_strong_heterogeneous"]
+  internal_time_unit: ms
+  csv_time_unit: ms
+  use_fake_model_runner: false
+  request_device_assignment: fixed
+  model_residency_policy: all_configured_models_simultaneous
+
 edge:
   num_lanes: 4
   lane_microbatch: false
@@ -25,6 +35,30 @@ model_runner:
       device: "cuda:0"
     large:
       model: Qwen/Qwen2.5-3B-Instruct
+      device: "cuda:0"
+
+model_bindings:
+  vocabulary_compatibility: exact_token_id_mapping
+  target:
+    model: Qwen/Qwen2.5-7B-Instruct
+    revision: a09a35458c702b33eeacc393d103063234e8bc28
+    tokenizer_revision: a09a35458c702b33eeacc393d103063234e8bc28
+    device: "cuda:1"
+  drafters:
+    small:
+      model: Qwen/Qwen2.5-0.5B-Instruct
+      revision: 7ae557604adf67be50417f59c2c2f167def9a775
+      tokenizer_revision: 7ae557604adf67be50417f59c2c2f167def9a775
+      device: "cuda:0"
+    medium:
+      model: Qwen/Qwen2.5-1.5B-Instruct
+      revision: 989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+      tokenizer_revision: 989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+      device: "cuda:0"
+    large:
+      model: Qwen/Qwen2.5-3B-Instruct
+      revision: aa8e72537993ba99e69dfaafa59ed015b17504d1
+      tokenizer_revision: aa8e72537993ba99e69dfaafa59ed015b17504d1
       device: "cuda:0"
 
 drafter_profiles:
