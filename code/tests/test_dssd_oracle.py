@@ -16,7 +16,9 @@ from src.model_runner import (
     SemanticVerifyInput,
     make_linear_draft_tree,
 )
+from src.simulator import Simulator
 from src.tree_drafting import SpecExecDraftTreeStrategy
+from tests.common import small_config
 
 
 TARGET_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
@@ -109,27 +111,6 @@ class _ContextualLogits:
                 )
             if corrupt_token is not None:
                 token_id = corrupt_token
-        return _FakeSelectedLogits(key, token_id)
-
-
-class _TreeRootCorruptLogits:
-    def __init__(self, input_ids, prefix_len, target_token_fn, corrupt_token):
-        self.input_ids = [list(row) for row in input_ids]
-        self.prefix_len = int(prefix_len)
-        self.target_token_fn = target_token_fn
-        self.corrupt_token = int(corrupt_token)
-
-    def __getitem__(self, key):
-        _FakeLogits.keys.append(key)
-        row, position, _ = key
-        if isinstance(row, slice):
-            row = 0
-        if isinstance(position, slice):
-            position = self.prefix_len - 1
-        if position == self.prefix_len - 1:
-            token_id = self.corrupt_token
-        else:
-            token_id = self.target_token_fn(self.input_ids[row][: position + 1])
         return _FakeSelectedLogits(key, token_id)
 
 
@@ -365,7 +346,7 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
                 eos_token_id=model_runner.eos_token_id,
             )
 
-    def test_draft_and_target_only_use_kv_cache_while_verify_batch_does_not(self) -> None:
+    def test_draft_uses_kv_cache_while_target_queries_use_exact_prefixes(self) -> None:
         with patch.dict(sys.modules, _fake_modules()):
             model_runner = HuggingFaceModelRunner(load_config("configs/default.yaml"))
             draft = model_runner.draft("small", [1, 2], 3)
@@ -384,21 +365,151 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
                 ]
             )
             self.assertEqual([result.accepted_count for result in results], [2, 1])
-            self.assertEqual(len(target.calls), 2)
+            self.assertEqual(len(target.calls), 5)
             self.assertTrue(all(call["use_cache"] is False for call in target.calls))
             self.assertEqual(
-                [call["input_ids"].shape for call in target.calls],
-                [(1, 3), (1, 4)],
+                [call["input_ids"].data[0] for call in target.calls],
+                [[1], [1, 7], [1, 7, 7], [1, 2, 3], [1, 2, 3, 7]],
             )
 
             verify_call_count = len(target.calls)
             self.assertEqual(model_runner.target_only([1, 2], 2), [7, 7])
-            self.assertTrue(
-                all(
-                    call["use_cache"] is True
-                    for call in target.calls[verify_call_count:]
-                )
+            target_only_calls = target.calls[verify_call_count:]
+            self.assertEqual(
+                [call["input_ids"].data[0] for call in target_only_calls],
+                [[1, 2], [1, 2, 7]],
             )
+            self.assertTrue(all(call["use_cache"] is False for call in target_only_calls))
+            self.assertTrue(all("past_key_values" not in call for call in target_only_calls))
+
+    def test_target_next_token_caches_only_queried_exact_prefixes(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            prefix = [1, 2]
+            first = model_runner.target_next_token(prefix)
+            repeated = model_runner.target_next_token(prefix)
+            second = model_runner.target_next_token(prefix + [first])
+
+            target = _FakeModelFactory.models[TARGET_MODEL_NAME]
+            self.assertEqual(repeated, first)
+            self.assertEqual(
+                [call["input_ids"].data[0] for call in target.calls],
+                [prefix, prefix + [first]],
+            )
+            self.assertEqual(second, _default_target_token(prefix + [first]))
+            self.assertTrue(all(call["use_cache"] is False for call in target.calls))
+
+    def test_linear_verify_queries_until_first_rejection(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            prefix = [3, 4]
+            first = _default_target_token(prefix)
+            correction = _default_target_token(prefix + [first])
+
+            result = model_runner.verify(prefix, [first, correction + 1, 31])
+
+            target = _FakeModelFactory.models[TARGET_MODEL_NAME]
+            self.assertEqual(result.accepted_count, 1)
+            self.assertEqual(result.correction_token, correction)
+            self.assertEqual(result.committed_tokens, [first, correction])
+            self.assertEqual(
+                [call["input_ids"].data[0] for call in target.calls],
+                [prefix, prefix + [first]],
+            )
+
+    def test_linear_verify_queries_bonus_only_after_full_acceptance(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            prefix = [5, 6]
+            first = _default_target_token(prefix)
+            second = _default_target_token(prefix + [first])
+            bonus = _default_target_token(prefix + [first, second])
+
+            result = model_runner.verify(prefix, [first, second])
+
+            target = _FakeModelFactory.models[TARGET_MODEL_NAME]
+            self.assertEqual(result.accepted_count, 2)
+            self.assertEqual(result.bonus_token, bonus)
+            self.assertEqual(result.committed_tokens, [first, second, bonus])
+            self.assertEqual(
+                [call["input_ids"].data[0] for call in target.calls],
+                [prefix, prefix + [first], prefix + [first, second]],
+            )
+
+    def test_tree_verify_queries_only_selected_prefix_path(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            prefix = [7, 8]
+            first = _default_target_token(prefix)
+            second = _default_target_token(prefix + [first])
+            bonus = _default_target_token(prefix + [first, second])
+            tree = DraftCandidateTree(
+                prefix_ids=prefix,
+                primary_ids=[first, second],
+                primary_node_ids=[1, 3],
+                nodes=[
+                    DraftTreeNode(1, None, first, 1),
+                    DraftTreeNode(2, None, first + 1, 1),
+                    DraftTreeNode(3, 1, second, 2),
+                    DraftTreeNode(4, 1, second + 1, 2),
+                ],
+            )
+
+            result = model_runner.verify_tree(prefix, tree)
+
+            target = _FakeModelFactory.models[TARGET_MODEL_NAME]
+            self.assertEqual(result.accepted_count, 2)
+            self.assertEqual(result.committed_tokens, [first, second, bonus])
+            self.assertEqual(
+                [call["input_ids"].data[0] for call in target.calls],
+                [prefix, prefix + [first], prefix + [first, second]],
+            )
+
+    def test_all_baselines_match_target_only_with_mixed_lengths_and_batch_shapes(self) -> None:
+        with _contextual_huggingface_runner() as model_runner:
+            config, _, workload = small_config(num_requests=4, output_len=5)
+            config["simulation"]["output_len_choices"] = [3, 5]
+            config["specedge"]["server_batch_size"] = 2
+            config["dip_sd"]["batch_count"] = 2
+            config["dip_sd"]["max_batch_size"] = 2
+            methods = (
+                "target_only",
+                "server_only_linear",
+                "server_only_tree",
+                "specedge_linear",
+                "specedge_tree",
+                "dip_sd",
+            )
+
+            results = {
+                method: Simulator(
+                    config,
+                    model_runner,
+                    workload,
+                    "combined_strong_heterogeneous",
+                    method,
+                ).run()
+                for method in methods
+            }
+            expected = [
+                request.generated_ids
+                for request in results["target_only"].requests
+            ]
+
+            self.assertEqual(
+                {request.output_len for request in results["target_only"].requests},
+                {3, 5},
+            )
+            for method in methods[1:]:
+                self.assertEqual(
+                    [request.generated_ids for request in results[method].requests],
+                    expected,
+                    method,
+                )
+            observed_batch_sizes = {
+                event["batch_size"]
+                for result in results.values()
+                for event in result.event_trace
+                if "batch_size" in event
+            }
+            self.assertIn(1, observed_batch_sizes)
+            self.assertTrue(any(size > 1 for size in observed_batch_sizes))
 
     def test_verify_batch_mixed_lengths_matches_individual_verify(self) -> None:
         with _contextual_huggingface_runner() as model_runner:
@@ -517,7 +628,7 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
             self.assertEqual(batch_results[2].bonus_token, eos)
             self.assertEqual(batch_results[2].committed_tokens, [11, eos])
 
-    def test_verify_batch_groups_by_prefix_and_draft_length(self) -> None:
+    def test_verify_batch_queries_each_needed_exact_prefix(self) -> None:
         with _contextual_huggingface_runner() as model_runner:
             model_runner.verify_batch(
                 [
@@ -527,10 +638,9 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
             )
 
             target = _FakeModelFactory.models[TARGET_MODEL_NAME]
-            self.assertEqual(len(target.calls), 2)
             self.assertEqual(
-                [call["input_ids"].shape for call in target.calls],
-                [(1, 4), (1, 4)],
+                [call["input_ids"].data[0] for call in target.calls],
+                [[1], [1, 18], [1, 2]],
             )
 
     def test_huggingface_runner_supports_proactive_bonus_tree(self) -> None:
@@ -615,16 +725,9 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
                 [[7, 8], [7, 8]],
             )
 
-    def test_tree_verify_batch_uses_safe_prefix_forward_and_tree_mask(self) -> None:
-        modules = _fake_modules()
-        _FakeModelFactory.dtypes = {
-            "Qwen/Qwen2.5-7B-Instruct": modules["torch"].float16,
-        }
-        with patch.dict(sys.modules, modules):
+    def test_tree_verify_batch_queries_selected_exact_prefixes(self) -> None:
+        with patch.dict(sys.modules, _fake_modules()):
             model_runner = HuggingFaceModelRunner(load_config("configs/default.yaml"))
-            model_runner._target_token = lambda prefix: (_ for _ in ()).throw(
-                AssertionError("tree verification should use batched logits")
-            )
             tree = DraftCandidateTree(
                 prefix_ids=[1, 2],
                 primary_ids=[7, 7],
@@ -641,22 +744,18 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
             )
 
             target = _FakeModelFactory.models["Qwen/Qwen2.5-7B-Instruct"]
-            self.assertEqual(len(target.calls), 2)
-            prefix_call = target.calls[0]
-            self.assertFalse(prefix_call["use_cache"])
-            self.assertEqual(prefix_call["input_ids"].shape, (1, 2))
-            self.assertNotIn("position_ids", prefix_call)
-            call = target.calls[1]
-            self.assertFalse(call["use_cache"])
-            self.assertEqual(call["input_ids"].shape, (1, 5))
-            self.assertEqual(call["position_ids"].data[0], [0, 1, 2, 2, 3])
-            self.assertEqual(call["attention_mask"].shape, (1, 1, 5, 5))
-            self.assertIs(call["attention_mask"].dtype, modules["torch"].float16)
+            self.assertEqual(
+                [call["input_ids"].data[0] for call in target.calls],
+                [[1, 2], [1, 2, 7], [1, 2, 7, 7]],
+            )
+            self.assertTrue(all(call["use_cache"] is False for call in target.calls))
+            self.assertTrue(all("position_ids" not in call for call in target.calls))
+            self.assertTrue(all("attention_mask" not in call for call in target.calls))
             self.assertEqual(results[0].accepted_count, 2)
             self.assertEqual(results[0].emitted_ids, [7, 7, 7])
             self.assertFalse(results[0].rejected)
 
-    def test_tree_verify_batch_preserves_root_token_from_safe_prefix_forward(self) -> None:
+    def test_tree_verify_batch_preserves_root_token_from_exact_prefix(self) -> None:
         prefix = [101, 102, 103]
         token_by_context = {
             tuple(prefix): 3838,
@@ -676,13 +775,6 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
         }
 
         def logits_factory(kwargs):
-            if "position_ids" in kwargs:
-                return _TreeRootCorruptLogits(
-                    kwargs["input_ids"].data,
-                    len(prefix),
-                    target_token,
-                    corrupt_token=2610,
-                )
             return _ContextualLogits(
                 kwargs["input_ids"].data,
                 kwargs.get("attention_mask").data if kwargs.get("attention_mask") else None,
@@ -712,12 +804,9 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
         finally:
             _FakeTokenizer.vocab_size = 32
 
-    def test_single_tree_verify_uses_tree_forward_path(self) -> None:
+    def test_single_tree_verify_uses_shared_exact_prefix_path(self) -> None:
         with patch.dict(sys.modules, _fake_modules()):
             model_runner = HuggingFaceModelRunner(load_config("configs/default.yaml"))
-            model_runner._target_token = lambda prefix: (_ for _ in ()).throw(
-                AssertionError("tree verification should use batched logits")
-            )
             tree = DraftCandidateTree(
                 prefix_ids=[1, 2],
                 primary_ids=[7],
@@ -728,7 +817,10 @@ class HuggingFaceModelRunnerTest(unittest.TestCase):
             result = model_runner.verify_tree([1, 2], tree)
 
             target = _FakeModelFactory.models["Qwen/Qwen2.5-7B-Instruct"]
-            self.assertEqual(len(target.calls), 2)
+            self.assertEqual(
+                [call["input_ids"].data[0] for call in target.calls],
+                [[1, 2], [1, 2, 7]],
+            )
             self.assertEqual(result.accepted_count, 1)
             self.assertEqual(result.emitted_ids, [7, 7])
 

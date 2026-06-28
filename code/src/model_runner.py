@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, Sequence, cast
+from typing import Any, Callable, Protocol, Sequence
 
 from src.tree_drafting import DraftTreePlan
 
@@ -91,6 +91,8 @@ class ModelRunner(Protocol):
     def encode_prompt(self, prompt: str) -> list[int]: ...
 
     def prompt_token_count(self, prompt: str) -> int: ...
+
+    def target_next_token(self, prefix_ids: Sequence[int]) -> int: ...
 
     def draft(self, drafter_profile: str, prefix_ids: Sequence[int], gamma: int) -> list[int]: ...
 
@@ -186,20 +188,12 @@ class FakeModelRunner:
         )
 
     def verify(self, prefix_ids: Sequence[int], draft_ids: Sequence[int]) -> VerificationResult:
-        context = list(prefix_ids)
-        emitted: list[int] = []
-        for index, draft_token in enumerate(draft_ids):
-            target_token = self._target_token(context)
-            if int(draft_token) != target_token:
-                emitted.append(target_token)
-                return VerificationResult(index, emitted, True)
-            emitted.append(target_token)
-            context.append(target_token)
-            if target_token == self.eos_token_id:
-                return VerificationResult(index + 1, emitted, False)
-        bonus = self._target_token(context)
-        emitted.append(bonus)
-        return VerificationResult(len(draft_ids), emitted, False, bonus)
+        return _verify_linear_candidate(
+            prefix_ids,
+            draft_ids,
+            self.target_next_token,
+            self.eos_token_id,
+        )
 
     def verify_batch(self, requests: Sequence[SemanticVerifyInput]) -> list[VerificationResult]:
         if not requests:
@@ -214,7 +208,7 @@ class FakeModelRunner:
         return verify_candidate_tree(
             prefix_ids,
             draft_tree,
-            self._target_token,
+            self.target_next_token,
             self.eos_token_id,
         )
 
@@ -230,12 +224,15 @@ class FakeModelRunner:
         context = list(prefix_ids)
         generated: list[int] = []
         for _ in range(max_new_tokens):
-            token_id = self._target_token(context)
+            token_id = self.target_next_token(context)
             generated.append(token_id)
             context.append(token_id)
             if token_id == self.eos_token_id:
                 break
         return generated
+
+    def target_next_token(self, prefix_ids: Sequence[int]) -> int:
+        return self._target_token(prefix_ids)
 
     def _draft_top_candidates(
         self,
@@ -301,6 +298,7 @@ class HuggingFaceModelRunner:
             raise ValueError("target tokenizer must define eos_token_id or pad_token_id")
         self.target_device = str(model_runner["target_device"])
         self.target_model = self._load_model(AutoModelForCausalLM, target_name, self.target_device)
+        self._target_next_token_cache: dict[tuple[int, ...], int] = {}
         self.drafters: dict[str, Any] = {}
         self.drafter_devices: dict[str, str] = {}
         self.vocab_size = self._tokenizer_vocab_size(self.tokenizer)
@@ -384,101 +382,29 @@ class HuggingFaceModelRunner:
         )
 
     def verify(self, prefix_ids: Sequence[int], draft_ids: Sequence[int]) -> VerificationResult:
-        return self._verify_equal_length_batch(
-            [SemanticVerifyInput(list(prefix_ids), list(draft_ids))]
-        )[0]
+        return _verify_linear_candidate(
+            prefix_ids,
+            draft_ids,
+            self.target_next_token,
+            self.eos_token_id,
+        )
 
     def verify_tree(
         self,
         prefix_ids: Sequence[int],
         draft_tree: DraftCandidateTree,
     ) -> VerificationResult:
-        return self.verify_tree_batch(
-            [SemanticTreeVerifyInput(list(prefix_ids), draft_tree)]
-        )[0]
+        return verify_candidate_tree(
+            prefix_ids,
+            draft_tree,
+            self.target_next_token,
+            self.eos_token_id,
+        )
 
     def verify_batch(self, requests: Sequence[SemanticVerifyInput]) -> list[VerificationResult]:
         if not requests:
             raise ValueError("verify batch must not be empty")
-        groups: dict[tuple[int, int], list[tuple[int, SemanticVerifyInput]]] = {}
-        for index, item in enumerate(requests):
-            key = (len(item.prefix_ids), len(item.draft_ids))
-            groups.setdefault(key, []).append((index, item))
-
-        ordered_results: list[VerificationResult | None] = [None] * len(requests)
-        for group in groups.values():
-            group_results = self._verify_equal_length_batch([item for _, item in group])
-            for (original_index, _), result in zip(group, group_results):
-                ordered_results[original_index] = result
-
-        return [cast(VerificationResult, result) for result in ordered_results]
-
-    def _verify_equal_length_batch(
-        self,
-        requests: Sequence[SemanticVerifyInput],
-    ) -> list[VerificationResult]:
-        if not requests:
-            raise ValueError("verify batch must not be empty")
-        prefix_lengths = {len(item.prefix_ids) for item in requests}
-        draft_lengths = {len(item.draft_ids) for item in requests}
-        if len(prefix_lengths) != 1 or len(draft_lengths) != 1:
-            raise ValueError("equal-length verification requires one prefix and draft length")
-
-        torch = self.torch
-        sequences = [item.prefix_ids + item.draft_ids for item in requests]
-        sequence_len = len(sequences[0])
-        input_ids = torch.tensor(
-            sequences,
-            dtype=torch.long,
-            device=self.target_device,
-        )
-        attention_mask = torch.full(
-            (len(sequences), sequence_len),
-            1,
-            dtype=torch.long,
-            device=self.target_device,
-        )
-        with torch.inference_mode():
-            logits = self.target_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                use_cache=False,
-            ).logits
-        return self._verify_from_logits(logits, requests)
-
-    def _verify_from_logits(
-        self,
-        logits: Any,
-        requests: Sequence[SemanticVerifyInput],
-    ) -> list[VerificationResult]:
-        results: list[VerificationResult] = []
-        for row, item in enumerate(requests):
-            emitted: list[int] = []
-            accepted = 0
-            rejected = False
-            bonus: int | None = None
-            for offset, draft_token in enumerate(item.draft_ids):
-                position = len(item.prefix_ids) - 1 + offset
-                target_token = int(
-                    logits[row, position, : self.vocab_size].argmax(dim=-1).item()
-                )
-                if int(draft_token) != target_token:
-                    emitted.append(target_token)
-                    rejected = True
-                    break
-                emitted.append(target_token)
-                accepted += 1
-                if target_token == self.eos_token_id:
-                    break
-            if not rejected and accepted == len(item.draft_ids):
-                if not emitted or emitted[-1] != self.eos_token_id:
-                    position = len(item.prefix_ids) - 1 + len(item.draft_ids)
-                    bonus = int(
-                        logits[row, position, : self.vocab_size].argmax(dim=-1).item()
-                    )
-                    emitted.append(bonus)
-            results.append(VerificationResult(accepted, emitted, rejected, bonus))
-        return results
+        return [self.verify(item.prefix_ids, item.draft_ids) for item in requests]
 
     def verify_tree_batch(
         self,
@@ -486,84 +412,43 @@ class HuggingFaceModelRunner:
     ) -> list[VerificationResult]:
         if not requests:
             raise ValueError("verify tree batch must not be empty")
-        torch = self.torch
-        packed_trees = [
-            _tree_with_prefix(item.draft_tree, item.prefix_ids)
-            for item in requests
-        ]
-        root_results = self.verify_batch(
-            [
-                SemanticVerifyInput(list(tree.prefix_ids), [])
-                for tree in packed_trees
-            ]
-        )
-        root_tokens = [
-            _single_committed_token(result)
-            for result in root_results
-        ]
-        sequences = [
-            list(tree.prefix_ids) + [node.token_id for node in tree.nodes]
-            for tree in packed_trees
-        ]
-        max_len = max(len(sequence) for sequence in sequences)
-        input_ids = torch.full(
-            (len(sequences), max_len),
-            int(self.pad_token_id),
-            dtype=torch.long,
-            device=self.target_device,
-        )
-        position_ids = torch.full(
-            (len(sequences), max_len),
-            0,
-            dtype=torch.long,
-            device=self.target_device,
-        )
-        mask_dtype = getattr(self.target_model, "dtype", None) or torch.float32
-        attention_mask = torch.tensor(
-            [
-                _tree_attention_mask_4d_data(tree, max_len)
-                for tree in packed_trees
-            ],
-            dtype=mask_dtype,
-            device=self.target_device,
-        )
-        for row, (tree, sequence) in enumerate(zip(packed_trees, sequences)):
-            input_ids[row, : len(sequence)] = torch.tensor(
-                sequence,
-                dtype=torch.long,
-                device=self.target_device,
-            )
-            position_ids[row, : len(sequence)] = torch.tensor(
-                _tree_position_ids(tree),
-                dtype=torch.long,
-                device=self.target_device,
-            )
-        with torch.inference_mode():
-            logits = self.target_model(
-                input_ids=input_ids,
-                position_ids=position_ids,
-                attention_mask=attention_mask,
-                use_cache=False,
-            ).logits
         return [
-            _verify_candidate_tree_from_logits(
-                logits,
-                row,
-                tree,
-                self.vocab_size,
+            verify_candidate_tree(
+                item.prefix_ids,
+                item.draft_tree,
+                self.target_next_token,
                 self.eos_token_id,
-                root_tokens[row],
             )
-            for row, tree in enumerate(packed_trees)
+            for item in requests
         ]
 
     def target_only(self, prefix_ids: Sequence[int], max_new_tokens: int) -> list[int]:
-        return self._incremental_greedy(
-            self.target_model,
-            self.target_device,
-            prefix_ids,
-            max_new_tokens,
+        context = list(prefix_ids)
+        generated: list[int] = []
+        for _ in range(max_new_tokens):
+            token_id = self.target_next_token(context)
+            generated.append(token_id)
+            context.append(token_id)
+            if token_id == self.eos_token_id:
+                break
+        return generated
+
+    def target_next_token(self, prefix_ids: Sequence[int]) -> int:
+        key = tuple(int(token_id) for token_id in prefix_ids)
+        if not key:
+            raise ValueError("target prefix must not be empty")
+        if key in self._target_next_token_cache:
+            return self._target_next_token_cache[key]
+
+        torch = self.torch
+        input_ids = torch.tensor([list(key)], dtype=torch.long, device=self.target_device)
+        with torch.inference_mode():
+            logits = self.target_model(input_ids=input_ids, use_cache=False).logits
+        token_id = int(
+            logits[0, len(key) - 1, : self.vocab_size].argmax(dim=-1).item()
         )
+        self._target_next_token_cache[key] = token_id
+        return token_id
 
     def _draft_top_candidates(
         self,
@@ -655,15 +540,7 @@ class HuggingFaceModelRunner:
         return results
 
     def _target_token(self, prefix_ids: Sequence[int]) -> int:
-        generated = self._incremental_greedy(
-            self.target_model,
-            self.target_device,
-            prefix_ids,
-            1,
-        )
-        if not generated:
-            raise RuntimeError("target model returned no token")
-        return generated[0]
+        return self.target_next_token(prefix_ids)
 
     def _incremental_greedy(
         self,
@@ -1169,48 +1046,6 @@ def build_tree_attention_mask_tensor(
     return tensor
 
 
-def _tree_attention_mask_4d_data(
-    draft_tree: DraftCandidateTree,
-    max_len: int,
-) -> list[list[list[float]]]:
-    allowed = build_tree_attention_mask(draft_tree)
-    valid_len = len(allowed)
-    matrix: list[list[float]] = []
-    for row in range(max_len):
-        values: list[float] = []
-        for col in range(max_len):
-            visible = row < valid_len and col < valid_len and allowed[row][col]
-            values.append(0.0 if visible else -10000.0)
-        matrix.append(values)
-    return [matrix]
-
-
-def _tree_position_ids(draft_tree: DraftCandidateTree) -> list[int]:
-    prefix_len = len(draft_tree.prefix_ids)
-    return list(range(prefix_len)) + [
-        prefix_len + max(0, int(node.depth) - 1)
-        for node in draft_tree.nodes
-    ]
-
-
-def _tree_with_prefix(
-    draft_tree: DraftCandidateTree,
-    prefix_ids: Sequence[int],
-) -> DraftCandidateTree:
-    prefix = list(prefix_ids)
-    if draft_tree.prefix_ids == prefix:
-        return draft_tree
-    return DraftCandidateTree(
-        prefix,
-        list(draft_tree.primary_ids),
-        list(draft_tree.primary_node_ids),
-        list(draft_tree.nodes),
-        processed_candidate_count=draft_tree.processed_candidate_count,
-        retained_tree_nodes=draft_tree.retained_tree_nodes,
-        target_verify_tree_nodes=draft_tree.target_verify_tree_nodes,
-    )
-
-
 def concat_linear_prefix_tree(
     prefix_ids: Sequence[int],
     prefix_draft_ids: Sequence[int],
@@ -1297,6 +1132,36 @@ def rebase_draft_tree(
     )
 
 
+def _verify_linear_candidate(
+    prefix_ids: Sequence[int],
+    draft_ids: Sequence[int],
+    target_token_fn: Callable[[Sequence[int]], int],
+    eos_token_id: int | None = None,
+) -> VerificationResult:
+    context = list(prefix_ids)
+    committed: list[int] = []
+    for index, draft_token in enumerate(draft_ids):
+        target_token = int(target_token_fn(context))
+        committed.append(target_token)
+        if int(draft_token) != target_token:
+            return VerificationResult(
+                index,
+                committed_tokens=committed,
+                correction_token=target_token,
+            )
+        context.append(target_token)
+        if target_token == eos_token_id:
+            return VerificationResult(index + 1, committed_tokens=committed)
+
+    bonus = int(target_token_fn(context))
+    committed.append(bonus)
+    return VerificationResult(
+        len(draft_ids),
+        committed_tokens=committed,
+        bonus_token=bonus,
+    )
+
+
 def verify_candidate_tree(
     prefix_ids: Sequence[int],
     draft_tree: DraftCandidateTree,
@@ -1333,63 +1198,6 @@ def verify_candidate_tree(
             bonus = int(target_token_fn(context))
             emitted.append(bonus)
             return VerificationResult(accepted, emitted, False, bonus)
-
-
-def _verify_candidate_tree_from_logits(
-    logits: Any,
-    row: int,
-    draft_tree: DraftCandidateTree,
-    vocab_size: int,
-    eos_token_id: int | None,
-    root_token: int | None = None,
-) -> VerificationResult:
-    children = _children_by_parent(draft_tree)
-    prefix_len = len(draft_tree.prefix_ids)
-    if prefix_len <= 0:
-        raise ValueError("tree verification requires a non-empty prefix")
-    node_position_by_id = {
-        node.node_id: prefix_len + index
-        for index, node in enumerate(draft_tree.nodes)
-    }
-
-    def target_token(parent_id: int | None) -> int:
-        if parent_id is None and root_token is not None:
-            return int(root_token)
-        position = prefix_len - 1 if parent_id is None else node_position_by_id[parent_id]
-        return int(logits[row, position, :vocab_size].argmax(dim=-1).item())
-
-    emitted: list[int] = []
-    accepted = 0
-    parent_id: int | None = None
-    while True:
-        token = target_token(parent_id)
-        matching_child = next(
-            (
-                child
-                for child in children.get(parent_id, [])
-                if child.token_id == token
-            ),
-            None,
-        )
-        if matching_child is None:
-            emitted.append(token)
-            rejected = bool(children.get(parent_id))
-            return VerificationResult(accepted, emitted, rejected, None if rejected else token)
-        emitted.append(token)
-        accepted += 1
-        parent_id = matching_child.node_id
-        if token == eos_token_id:
-            return VerificationResult(accepted, emitted, False)
-        if not children.get(parent_id):
-            bonus = target_token(parent_id)
-            emitted.append(bonus)
-            return VerificationResult(accepted, emitted, False, bonus)
-
-
-def _single_committed_token(result: VerificationResult) -> int:
-    if len(result.committed_tokens) != 1:
-        raise RuntimeError("root token verification must return exactly one token")
-    return int(result.committed_tokens[0])
 
 
 def _new_tree_node(
