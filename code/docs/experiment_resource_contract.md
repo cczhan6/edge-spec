@@ -22,8 +22,10 @@ Legacy aliases such as `server_only`, `SpecEdge`, and `sync_batch_sd` are compat
 only. They must never appear as formal result labels. Component ablations and `full` are outside
 this canonical-baseline contract.
 
-All six canonical methods have passed deterministic trace validation and a live real-model
-greedy-equivalence smoke. Formal-scale performance measurements have not yet been run.
+All six canonical methods have passed deterministic trace validation and a short live real-model
+greedy-equivalence smoke. The 16-request formal-configuration preflight found longer-trace greedy
+divergence and DiP-SD resource overlap, so baseline freeze readiness is currently blocked.
+Formal-scale 480-request performance measurements have not been run.
 
 ## 2. Physical GPU duties and environment manifest
 
@@ -48,6 +50,12 @@ the NVIDIA driver version; and, for every visible GPU, index, model name, total 
 and driver version. Missing packages, Git metadata, or `nvidia-smi` are recorded in
 `collection_errors`; an unavailable field is never silently omitted. A formal run is invalid if
 either required GPU or any required software/version field is unavailable.
+
+The preflight host requires `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. Without it, the
+models remain resident but the first large tree-candidate forward can fail because reserved CUDA
+segments fragment the remaining memory. This allocator setting changes physical memory management
+only; it does not change virtual latency, method parameters, or model bindings. It is recorded in
+the environment and per-run manifests.
 
 ## 3. Real semantics versus virtual time
 
@@ -83,12 +91,21 @@ All tokenizers must have exactly the target tokenizer's token-to-id mapping, and
 vocabulary must cover that mapping. The real runner checks these properties on load.
 
 The declared residency policy is `all_configured_models_simultaneous`: the target remains on
-`cuda:1`, and all drafter profiles required by the scenario remain on `cuda:0`. If the collected
-GPU memory cannot support that policy, the run must stop. A permitted fallback is to create a
-separate resolved configuration and process for a scenario/run phase that uses only one drafter
-profile, releasing the previous process before loading the next. It is not permitted to unload
-and substitute a different profile mid-run or to combine results from non-equivalent scenario
-phases as one run.
+`cuda:1`, and all drafter profiles required by the scenario remain on `cuda:0`. The measured
+`outputs/drafter_residency_manifest.json` result on the experiment host is:
+
+| Drafter load | dtype | peak allocated MiB | free after load MiB | OOM |
+|---|---|---:|---:|---:|
+| Qwen2.5-0.5B | bfloat16 | 950.17 | 22680.06 | no |
+| Qwen2.5-1.5B | bfloat16 | 2945.28 | 20538.06 | no |
+| Qwen2.5-3B | bfloat16 | 5994.46 | 17532.06 | no |
+| all three simultaneous | bfloat16 | 9889.91 | 13408.06 | no |
+
+All three drafter tokenizers have the exact target token-to-id mapping and matching special token
+IDs. Sequential/lazy loading is therefore not active on this host. If a future host cannot hold
+all three drafters, it must keep the virtual-device/profile bindings unchanged, record
+`sequential_lazy_model_loading` in both residency and environment manifests, and exclude model
+load wall time from simulator decode latency. Profiles may not be merged or substituted.
 
 Normal method/scenario isolation is process-level: load the pinned target and required drafters at
 process start, run that one resolved cell, then terminate the process to release GPU memory before
@@ -176,9 +193,8 @@ token/s, bandwidth uses Mbps, token counters are integers, and acceptance/speedu
 
 | Metric | Fixed definition |
 |---|---|
-| TTFT | Prefill/request-to-first-token TTFT is outside this decode-only repository and is not exported. If a downstream table requires the field, emit `NA`, never request completion latency or TPOT as a surrogate. |
-| TPOT | Per request: decode completion latency / committed output-token count; report the arithmetic mean in ms/token. |
-| TBT | Current decode-only aggregate uses the same per-request value and aggregation as TPOT; report in ms/token and do not claim token-level inter-arrival instrumentation. |
+| TTFT | Prefill/request-to-first-token TTFT is outside this decode-only repository and is not exported. If a downstream table requires the field, emit `NA`; no decode-first-token surrogate is permitted. |
+| Inter-token latency | Within one request, subtract adjacent committed-token timestamps. Tokens made visible by one verification result share its result-visible time and therefore may have a zero interval. Aggregate mean/P50/P95 over all adjacent intervals in one cell. The first committed-token timestamp is trace evidence only and is not reported as a first-token metric. |
 | Request completion latency | `finish_time_ms - decode_ready_time_ms`, in ms. |
 | Throughput | Total committed output tokens divided by `(max finish - min decode-ready)/1000`, in token/s. Current CSV field is `goodput_tok_s`. |
 | Accepted token ratio | Accepted draft tokens / verified proposed draft positions. Target-only has no proposals and reports 0/NA according to the output schema. |
@@ -238,16 +254,45 @@ Every formal cell must additionally satisfy all of the following post-run checks
 Failure of any gate invalidates the whole `scenario x method` cell. There is no silent fallback,
 partial-result reporting, or relabeling of an invalid run.
 
-## 9. Values requiring operator confirmation before the first formal run
+## 9. Small formal-configuration preflight
+
+Run the residency check and 24-cell preflight with:
+
+```bash
+python scripts/check_drafter_residency.py
+PYTHON_BIN=/root/miniforge3/envs/edge-spec/bin/python \
+  LOCAL_FILES_ONLY=true bash scripts/run_baseline_preflight.sh
+python scripts/verify_baseline_preflight.py
+```
+
+The preflight fixes two scenarios, seeds `20260628`/`20260629`, 16 requests, 32 output tokens,
+and Poisson arrivals. All other virtual devices, drafter profiles, network/verification settings,
+Server-only batch size, SpecEdge proactive configuration, DiP-SD optimizer/barriers, and tree
+labels come from the formal configuration unchanged. The shell invokes the real runner once per
+scenario/seed and runs all six methods in that process; model-loading wall time is excluded from
+virtual decode time.
+
+Each `outputs/baseline_preflight/<scenario>/<seed>/<method>/` directory contains the resolved
+config, environment/run manifests, narrow decode-only metrics, request metrics, event/token traces,
+resource timeline, and stdout log. `summary.csv` and `summary.md` contain no TTFT or first-token
+column. This preflight validates the pipeline and definitions only; its values are not paper
+performance results.
+
+The 2026-06-28 run completed all 24 real-runner cells and all expected output tokens, with finite
+nonnegative metrics and valid time units/config markers. Verification failed because longer
+bfloat16 traces are not greedily identical across the KV-cache, equal-length batch, and tree-mask
+target kernels, and because DiP-SD starts simultaneous drafts for two requests assigned to one
+virtual device. No method parameter or algorithm was changed to hide either failure.
+
+## 10. Values requiring operator confirmation before the first formal run
 
 The logical experiment values above are fixed. The following facts cannot be frozen from source
 control and must be confirmed from the intended experiment host:
 
-- actual `cuda:0`/`cuda:1` GPU models and memory, driver/runtime compatibility, and whether all
-  declared drafter profiles fit simultaneously on `cuda:0`;
+- actual `cuda:0`/`cuda:1` GPU models and memory and driver/runtime compatibility on any new host;
 - the exact Python/PyTorch/Transformers/CUDA versions to retain as the publication environment;
 - local cache/path availability for every pinned model/tokenizer revision;
-- whether downstream paper tables require decode-first-commit instrumentation under a different
-  name; this repository's prefill TTFT remains explicitly out of scope.
+- any downstream schema that requests TTFT; this repository must emit `NA` rather than introduce
+  a decode-first-token replacement.
 
 These are operator decisions or observations, not values the simulator may infer or replace.

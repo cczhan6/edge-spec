@@ -1,6 +1,6 @@
 # Baseline Reconstruction Status
 
-Current milestone: M24 baseline experiment resource contract freeze
+Current milestone: M25 decode-only baseline formal preflight
 
 | Milestone | Status | Commit | Tests |
 |---|---|---|---|
@@ -25,6 +25,41 @@ Current milestone: M24 baseline experiment resource contract freeze
 | M22 Mixed-length real-model batch verification | complete | this commit | real Qwen smoke -> `target_only`, `server_only_linear`, `specedge_linear`, `dip_sd` all `success=True`; `pytest -q` -> 187 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 187 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all trace methods `success=True`; `git diff --check` -> passed |
 | M23 Real-model tree baseline smoke coverage | complete | `5a5a099` | real Qwen tree smoke -> `target_only`, `server_only_tree`, `specedge_tree` all `success=True`; `pytest -q` -> 190 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 190 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all trace methods `success=True`; `git diff --check` -> passed |
 | M24 Experiment resource contract freeze | complete | this commit | `pytest -q` -> 213 passed; `bash scripts/verify_baseline_rebuild.sh` -> full pytest 213 passed, method-specific pytest 79 passed; `bash scripts/run_baseline_trace.sh` -> all six trace methods `success=True`; no 480-request formal experiment run |
+| M25 Decode-only formal preflight | harness complete / freeze blocked | this commit | drafter residency PASS; 24/24 real-runner cells executed; verifier FAIL on long-trace greedy equivalence and DiP-SD per-device overlap; no 480-request run |
+
+## M25 Decode-Only Baseline Formal Preflight
+
+- Added `scripts/check_drafter_residency.py`, `scripts/run_baseline_preflight.sh`, and
+  `scripts/verify_baseline_preflight.py` without changing the six baseline algorithms or proposed
+  method.
+- The decode clock starts from a prepared prompt prefix/KV state. Model loading, tokenization,
+  prompt transfer, prefill, initial KV construction, TTFT, and first-token latency remain outside
+  the measured interval.
+- Qwen2.5 0.5B/1.5B/3B individually and simultaneously loaded on `cuda:0` as bfloat16. The
+  simultaneous peak allocated memory was 9889.91 MiB, remaining memory was 13408.06 MiB, and no
+  OOM occurred. Tokenizer mappings and special token IDs matched exactly.
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is required for the subsequent large tree
+  forward working set; it is recorded in the environment/run manifests and does not enter virtual
+  decode time.
+- Both scenarios, all six methods, and seeds `20260628`/`20260629` completed 16 requests with 32
+  committed tokens each through the real Hugging Face runner. All 24 output directories and the
+  root summaries were generated.
+- Decode-only metric schemas contain makespan, request latency, adjacent committed-token interval
+  mean/P50/P95, effective throughput, same-cell target-only speedup, token counters, utilization,
+  and verification queue wait. They contain no TTFT or first-token column.
+- Configuration, Poisson arrival, event monotonicity, finite/nonnegative metrics, committed token
+  counts, Server-only batch size 1, SpecEdge proactive evidence, DiP-SD optimizer/two-batch
+  evidence, and `specexec_approx` markers were retained.
+- Freeze blocker 1: all five speculative methods diverge from the paired target-only trace on at
+  least one longer bfloat16 sequence. The first observed homogeneous/20260628 mismatch is request
+  1, output position 13 (`target_only=13014`, speculative methods `=23069`). Different physical
+  target execution kernels produce different argmax values; replacing them with an extra oracle
+  would change acceptance semantics and was not done.
+- Freeze blocker 2: every DiP-SD cell contains overlapping `dip_sd_draft` intervals for different
+  requests mapped to the same virtual device. The verifier reports the exact device intervals.
+- Result: baseline freeze readiness is **not reached**. The preflight is pipeline/correctness
+  evidence only and must not be used as a paper performance result. No parameters were tuned from
+  these results, and no 480-request experiment was run.
 
 ## M24 Baseline Experiment Resource Contract Freeze
 

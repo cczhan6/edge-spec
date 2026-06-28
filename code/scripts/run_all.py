@@ -49,11 +49,16 @@ def run_experiments(
     write_details: bool = True,
     tree_draft_strategy: str | None = None,
     trace_bundle_dir: str | None = None,
+    trace_bundle_root: str | None = None,
 ) -> list[dict]:
     if single_out and (len(scenarios) != 1 or len(methods) != 1):
         raise ValueError("--out requires exactly one scenario and one method")
     if trace_bundle_dir and (len(scenarios) != 1 or len(methods) != 1):
         raise ValueError("--trace-bundle-dir requires exactly one scenario and one method")
+    if trace_bundle_dir and trace_bundle_root:
+        raise ValueError("--trace-bundle-dir and --trace-bundle-root are mutually exclusive")
+    if trace_bundle_root and len(scenarios) != 1:
+        raise ValueError("--trace-bundle-root requires exactly one scenario")
     model_runner = build_model_runner(
         apply_tree_draft_strategy(load_config(config_path), tree_draft_strategy),
         use_fake_model_runner=use_fake_model_runner,
@@ -108,6 +113,14 @@ def run_experiments(
             main, system = summarize(result, int(config["simulation"]["num_devices"]))
             if trace_bundle_dir:
                 write_trace_bundle(trace_bundle_dir, config, result, main, system)
+            elif trace_bundle_root:
+                write_trace_bundle(
+                    Path(trace_bundle_root) / result.method,
+                    config,
+                    result,
+                    main,
+                    system,
+                )
             main_rows.append(main)
             category_main_rows.extend(
                 category_rows(result, int(config["simulation"]["num_devices"]))
@@ -272,6 +285,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Requires one scenario and one method."
         ),
     )
+    parser.add_argument(
+        "--trace-bundle-root",
+        help=(
+            "Write one deterministic trace bundle per selected method under this root. "
+            "Requires exactly one scenario."
+        ),
+    )
     return parser
 
 
@@ -292,6 +312,7 @@ def main() -> None:
         write_details=not args.summary_only,
         tree_draft_strategy=args.tree_draft_strategy,
         trace_bundle_dir=args.trace_bundle_dir,
+        trace_bundle_root=args.trace_bundle_root,
     )
     print(f"wrote {len(rows)} method rows")
 

@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 from src.config import load_config
 from src.entities import SimulationResult
-from src.metrics import MAIN_FIELDS, write_csv
+from src.metrics import MAIN_FIELDS, SYSTEM_FIELDS, write_csv
 
 
 METHODS = (
@@ -30,6 +30,7 @@ REQUIRED_FILES = (
     "token_trace.csv",
     "resource_timeline.csv",
     "batch_trace.csv",
+    "system_metrics.csv",
 )
 
 REQUEST_TRACE_FIELDS = [
@@ -112,6 +113,7 @@ TOKEN_TRACE_FIELDS = [
     "position",
     "token_index",
     "token_id",
+    "commit_time_ms",
     "count",
     "status",
     "source_event",
@@ -167,7 +169,6 @@ def write_trace_bundle(
     main: dict[str, Any],
     system: dict[str, Any],
 ) -> None:
-    del system
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     _write_json(
@@ -185,6 +186,7 @@ def write_trace_bundle(
         RESOURCE_TIMELINE_FIELDS,
     )
     _write_csv(directory / "batch_trace.csv", _batch_trace_rows(result), BATCH_TRACE_FIELDS)
+    write_csv(directory / "system_metrics.csv", [system], SYSTEM_FIELDS)
 
 
 def prepare_trace_inputs(root: str | Path, config_path: str | Path) -> tuple[Path, Path]:
@@ -339,7 +341,9 @@ def _event_trace_rows(result: SimulationResult) -> list[dict[str, Any]]:
 def _token_trace_rows(result: SimulationResult) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for request in result.requests:
-        for position, token_id in enumerate(request.generated_ids):
+        for position, (token_id, commit_time_ms) in enumerate(
+            zip(request.generated_ids, request.committed_token_times_ms, strict=True)
+        ):
             rows.append(
                 _token_row(
                     result,
@@ -348,6 +352,7 @@ def _token_trace_rows(result: SimulationResult) -> list[dict[str, Any]]:
                     position=position,
                     token_index=position,
                     token_id=token_id,
+                    commit_time_ms=commit_time_ms,
                     count=1,
                     status=request.status,
                     source_event="final_output",
@@ -362,7 +367,7 @@ def _token_trace_rows(result: SimulationResult) -> list[dict[str, Any]]:
                 segment_id=segment.segment_id,
                 device_id=segment.device_id,
                 position=segment.base_pos,
-                count=segment.proposed_count,
+                count=_drafted_count(segment),
                 status=segment.status,
                 source_event="draft",
             )
@@ -390,7 +395,7 @@ def _token_trace_rows(result: SimulationResult) -> list[dict[str, Any]]:
                     segment_id=segment.segment_id,
                     device_id=segment.device_id,
                     position=segment.base_pos,
-                    count=segment.verify_gamma,
+                    count=_verified_count(segment),
                     status=segment.status,
                     source_event="verification_result",
                 )
@@ -453,6 +458,7 @@ def _token_row(
     position: int | None = None,
     token_index: int | None = None,
     token_id: int | None = None,
+    commit_time_ms: float | None = None,
     count: int = 1,
     status: str = "",
     source_event: str = "",
@@ -468,6 +474,7 @@ def _token_row(
         "position": position,
         "token_index": token_index,
         "token_id": token_id,
+        "commit_time_ms": commit_time_ms,
         "count": count,
         "status": status,
         "source_event": source_event,
@@ -891,6 +898,13 @@ def _sum_token_type(rows: list[dict[str, str]], token_type: str) -> int:
 
 
 def _segment_waste_count(segment: Any) -> int:
+    if segment.tree_strategy != "linear":
+        drafted = _drafted_count(segment)
+        if segment.status in {"accepted", "rejected"}:
+            return max(0, drafted - int(segment.accepted_count or 0))
+        if segment.status in {"stale", "discarded"}:
+            return drafted
+        return 0
     if segment.status == "rejected":
         return max(0, segment.proposed_count - int(segment.accepted_count or 0))
     if segment.status in {"stale", "discarded"}:
@@ -910,7 +924,19 @@ def _proactive_proposed_count(segment: Any) -> int:
     tree = segment.proactive_draft_tree
     if tree is None or not tree.nodes:
         return len(segment.proactive_draft_ids)
-    return max(len(segment.proactive_draft_ids), max(node.depth for node in tree.nodes))
+    return int(tree.processed_candidate_count or len(tree.nodes))
+
+
+def _drafted_count(segment: Any) -> int:
+    if segment.tree_strategy != "linear":
+        return int(segment.processed_candidate_count or segment.proposed_count)
+    return int(segment.proposed_count)
+
+
+def _verified_count(segment: Any) -> int:
+    if segment.tree_strategy != "linear":
+        return int(segment.target_verify_tree_nodes or segment.verify_gamma)
+    return int(segment.verify_gamma)
 
 
 def _event_time(event: dict[str, Any]) -> float:

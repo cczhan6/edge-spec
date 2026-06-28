@@ -424,6 +424,9 @@ class Simulator:
                     segment.downlink_delay_ms = downlink_delay_ms
                     result_arrival_ms = verify_done_ms + downlink_delay_ms
                     request.generated_ids.extend(emitted_ids)
+                    request.committed_token_times_ms.extend(
+                        [result_arrival_ms] * len(emitted_ids)
+                    )
                     request_ready_ms[request.request_id] = result_arrival_ms
                     epoch_result_arrivals.append(result_arrival_ms)
                     self._trace.append(
@@ -822,6 +825,13 @@ class Simulator:
         finish_ms = start_ms + compute_ms
         self._target_only_available_ms[lane_id] = finish_ms
         request.generated_ids = generated_ids
+        token_interval_ms = 1000.0 / float(
+            self.config["edge"]["target_only_token_rate_tok_s"]
+        )
+        request.committed_token_times_ms = [
+            finish_ms - token_interval_ms * (len(generated_ids) - index - 1)
+            for index in range(len(generated_ids))
+        ]
         request.edge_generated_ids = generated_ids.copy()
         request.target_only_queue_wait_ms = start_ms - now_ms
         request.target_only_compute_ms = compute_ms
@@ -2127,6 +2137,9 @@ class Simulator:
             if segment_id in request.in_flight_segments:
                 request.in_flight_segments.remove(segment_id)
             request.generated_ids.extend(segment.emitted_ids)
+            request.committed_token_times_ms.extend(
+                [now_ms] * len(segment.emitted_ids)
+            )
 
     def _on_request_finish(self, now_ms: float, request_id: int) -> None:
         request = self.requests[request_id]

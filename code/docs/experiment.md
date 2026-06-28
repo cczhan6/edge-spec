@@ -4,8 +4,9 @@
 
 正式 baseline 的硬件职责、模型 commit、资源绑定、固定场景、指标计数和正确性门槛以
 [experiment_resource_contract.md](experiment_resource_contract.md) 为准。六个 canonical
-方法已通过 deterministic trace 和真实模型 greedy-equivalence smoke，但尚未完成 480 请求
-正式规模性能实验。
+方法已通过 deterministic trace 和短序列真实模型 greedy-equivalence smoke。16 请求正式配置
+预检已完成 24 个 real-runner cell，但长序列 greedy equivalence 与 DiP-SD 资源互斥检查失败；
+尚未运行 480 请求正式规模性能实验。
 
 ## 阅读方式
 
@@ -43,6 +44,25 @@
 方法名、Server-only batch size 1、`specexec_approx` tree 标记、Poisson 在线到达、可用模型、
 分离的 target/drafter GPU、关闭 fake runner、显式 seed/请求数/输出长度/arrival rate 和
 毫秒时间单位；任一条件不满足即报错，不做静默回退。
+
+### 小规模正式配置预检
+
+```bash
+python scripts/check_drafter_residency.py
+PYTHON_BIN=/root/miniforge3/envs/edge-spec/bin/python \
+  LOCAL_FILES_ONLY=true bash scripts/run_baseline_preflight.sh
+python scripts/verify_baseline_preflight.py
+```
+
+预检固定 `homogeneous`、`combined_strong_heterogeneous`，两个 seed，16 个请求、32 个输出
+token 和 Poisson 到达；只缩小规模，不修改虚拟设备、网络、verification latency、
+Server-only `batch_size=1`、SpecEdge proactive、DiP-SD `paper_exact`/epoch barrier 或
+`specexec_approx` tree 语义。模型加载墙钟不计入 decode latency。
+
+结果保存在 `outputs/baseline_preflight/<scenario>/<seed>/<method>/`，根目录生成
+`summary.csv` 和 `summary.md`。该预检只验证管线和指标定义，不是论文性能结果。当前实测
+24/24 cell 均完成，但 verifier 因长序列 greedy token 分歧和 DiP-SD 同设备 draft 重叠而
+失败，因此不得进入 480 请求正式实验。
 
 ## 2. 实验设置
 
@@ -346,6 +366,15 @@ SD baseline 的具体解释：
 - `latency_speedup_vs_autoregressive`：相对 `target_only` 的时延加速；
 - `latency_ratio_vs_*` 和 `relative_latency_reduction_vs_*`：相对 canonical baseline 和 legacy 兼容 baseline；
 - `goodput_gain_vs_*`：相对基线 goodput 提升。
+
+正式预检的窄指标表单独使用：`decode_makespan`、`request_decode_latency`、
+`mean_inter_token_latency`、`p50_inter_token_latency`、`p95_inter_token_latency`、
+`effective_throughput_tokens_per_s`、`speedup_vs_target_only`、`acceptance_ratio`、
+`drafted_tokens`、`verified_tokens`、`accepted_tokens`、`committed_tokens`、
+`wasted_tokens`、`target_utilization`、`draft_utilization` 和
+`verification_queue_wait`。inter-token latency 是同一请求相邻 committed token 提交时间之差；
+同一 verification result 同时可见的 token 间隔可为 0。首个 committed timestamp 只用于
+trace 完整性，不形成首 token 指标。TTFT 继续为 `NA`，汇总表不含 TTFT 列。
 
 系统表：
 

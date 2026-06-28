@@ -60,6 +60,7 @@ class Request:
     prompt_ids: list[int]
     finish_time_ms: float | None = None
     generated_ids: list[int] = field(default_factory=list)
+    committed_token_times_ms: list[float] = field(default_factory=list)
     edge_generated_ids: list[int] = field(default_factory=list)
     prefix_version: int = 0
     status: str = "running"
