@@ -277,12 +277,14 @@ class Simulator:
                     if remaining <= 0:
                         continue
                     device = self.devices[request.device_id]
+                    runtime = self.device_runtimes[request.device_id]
                     prefix_ids = request.prompt_ids + request.generated_ids
                     draft_len = min(plan.draft_lengths[request_id], remaining)
                     draft_start_ms = max(
                         now_ms,
                         request_ready_ms[request_id],
                         request.arrival_time_ms,
+                        runtime.busy_until_ms,
                     )
                     draft_ids = self.model_runner.draft(
                         device.drafter_profile,
@@ -293,6 +295,7 @@ class Simulator:
                         raise RuntimeError("semantic drafter returned an empty dip_sd segment")
                     draft_compute_ms = draft_latency_ms(device, len(draft_ids))
                     draft_done_ms = draft_start_ms + draft_compute_ms
+                    runtime.busy_until_ms = draft_done_ms
                     uplink_payload_bytes = self._payload_bytes(len(draft_ids))
                     uplink_delay_ms = self._network_delay_ms(
                         device,
@@ -329,7 +332,6 @@ class Simulator:
                     )
                     self.segments.append(segment)
                     segments.append(segment)
-                    runtime = self.device_runtimes[request.device_id]
                     runtime.total_busy_time_ms += draft_compute_ms
                     runtime.generated_draft_tokens += segment.proposed_count
                     runtime.selected_gammas.append(len(draft_ids))

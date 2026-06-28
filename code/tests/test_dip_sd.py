@@ -352,6 +352,45 @@ class DipSDTest(unittest.TestCase):
             )
         )
 
+    def test_dip_sd_draft_resource_is_isolated_per_virtual_device(self) -> None:
+        config, _, workload = dip_sd_trace_config(num_requests=4, output_len=6)
+        config["simulation"]["num_devices"] = 2
+        templates = config["device_pools"]["heterogeneous"]["templates"]
+        templates["low_end"]["count"] = 2
+        templates["mid_end"]["count"] = 0
+        templates["high_end"]["count"] = 0
+
+        result = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+
+        drafts = epoch_events(result, "dip_sd_draft", 0)
+        for device_id in {event["device_id"] for event in drafts}:
+            intervals = sorted(
+                (
+                    event["start_time_ms"],
+                    event["finish_time_ms"],
+                )
+                for event in drafts
+                if event["device_id"] == device_id
+            )
+            for previous, current in zip(intervals, intervals[1:]):
+                self.assertGreaterEqual(current[0], previous[1])
+
+        self.assertTrue(
+            any(
+                left["device_id"] != right["device_id"]
+                and left["start_time_ms"] < right["finish_time_ms"]
+                and right["start_time_ms"] < left["finish_time_ms"]
+                for index, left in enumerate(drafts)
+                for right in drafts[index + 1 :]
+            )
+        )
+
     def test_dip_sd_other_batch_can_continue_drafting(self) -> None:
         result = run_four_request_dip_sd_trace()
 

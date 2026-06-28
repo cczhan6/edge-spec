@@ -409,6 +409,25 @@ class PreflightMetricTest(unittest.TestCase):
                 request.finish_time_ms,
             )
 
+    def test_committed_trace_rows_are_sorted_by_request_and_token_index(self) -> None:
+        config, model_runner, workload = small_config(num_requests=2, output_len=5)
+        result = Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            "server_only_linear",
+        ).run()
+        result.requests.reverse()
+
+        committed_positions = [
+            (row["request_id"], row["token_index"])
+            for row in _token_trace_rows(result)
+            if row["token_type"] == "committed"
+        ]
+
+        self.assertEqual(committed_positions, sorted(committed_positions))
+
 
 if __name__ == "__main__":
     unittest.main()

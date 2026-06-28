@@ -358,6 +358,7 @@ def _token_trace_rows(result: SimulationResult) -> list[dict[str, Any]]:
                     source_event="final_output",
                 )
             )
+    rows.sort(key=lambda row: (int(row["request_id"]), int(row["token_index"])))
     for segment in result.segments:
         rows.append(
             _token_row(
