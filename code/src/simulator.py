@@ -338,6 +338,7 @@ class Simulator:
                     self._trace.append(
                         {
                             "event": "dip_sd_draft",
+                            "resource_type": "draft",
                             "method": self.spec.name,
                             "epoch": epoch_index,
                             "batch_index": batch_index,
@@ -366,6 +367,7 @@ class Simulator:
                 self._trace.append(
                     {
                         "event": "dip_sd_batch_verify",
+                        "resource_type": "target",
                         "method": self.spec.name,
                         "epoch": epoch_index,
                         "batch_index": batch_index,

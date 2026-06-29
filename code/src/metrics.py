@@ -288,7 +288,8 @@ def summarize(result: SimulationResult, num_devices: int) -> tuple[dict[str, Any
     verify_events = [
         event["compute_ms"]
         for event in result.event_trace
-        if event["event"] in {"lane_verify", "global_batch_verify", "server_only_verify"}
+        if event.get("resource_type") == "target"
+        or event["event"] in {"lane_verify", "global_batch_verify", "server_only_verify"}
     ]
     server_only_draft_events = [
         event["compute_ms"]

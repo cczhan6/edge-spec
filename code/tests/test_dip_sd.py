@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import csv
+import tempfile
 import unittest
 from itertools import product
+from pathlib import Path
 
+from scripts.baseline_trace import write_trace_bundle
 from src.dip_sd import (
     DipSDModelProfile,
     DipSDProblem,
@@ -12,11 +16,53 @@ from src.dip_sd import (
 )
 from src.config import validate_config
 from src.methods import get_method_spec
+from src.metrics import summarize
 from src.simulator import Simulator
 from tests.common import accepting_model_runner, rejecting_model_runner, small_config
 
 
 class DipSDTest(unittest.TestCase):
+    def test_dip_sd_target_resource_produces_nonzero_verify_metrics(self) -> None:
+        config, model_runner, workload = dip_sd_trace_config(
+            num_requests=2,
+            output_len=4,
+        )
+        result = Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            "dip_sd",
+        ).run()
+        main, system = summarize(result, int(config["simulation"]["num_devices"]))
+
+        with tempfile.TemporaryDirectory() as directory:
+            write_trace_bundle(directory, config, result, main, system)
+            with Path(directory, "resource_timeline.csv").open(
+                newline="",
+                encoding="utf-8",
+            ) as handle:
+                resources = list(csv.DictReader(handle))
+            with Path(directory, "system_metrics.csv").open(
+                newline="",
+                encoding="utf-8",
+            ) as handle:
+                metrics = next(csv.DictReader(handle))
+
+        self.assertTrue(
+            any(
+                row["resource_type"] == "target" and row["event"] == "dip_sd_batch_verify"
+                for row in resources
+            )
+        )
+        self.assertGreater(float(metrics["verify_compute_ms_total"]), 0.0)
+        self.assertGreater(float(metrics["verify_compute_ms_mean"]), 0.0)
+        self.assertGreater(float(metrics["target_utilization"]), 0.0)
+        self.assertLess(
+            float(metrics["verify_idle_time_ms"]),
+            main["makespan_ms"],
+        )
+
     def test_dip_sd_methods_are_registered(self) -> None:
         config, _, _ = small_config(num_requests=1, output_len=4)
 
