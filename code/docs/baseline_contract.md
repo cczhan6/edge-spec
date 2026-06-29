@@ -346,6 +346,8 @@ linear and tree candidates.
 ## 6.5 Server verification and batching
 
 The server accepts candidate trees from multiple clients and verifies a batch with one target-model forward execution.
+The latency model uses one forward work unit per non-empty tree in that batch;
+tree node counts remain trace metadata and do not multiply the fixed-forward latency.
 
 Supported batching modes:
 

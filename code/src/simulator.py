@@ -732,7 +732,10 @@ class Simulator:
         if self._is_specedge_runtime():
             return verify_latency_ms(
                 self.config["edge"],
-                [segment.target_verify_tree_nodes for segment in segments],
+                [
+                    1 if segment.draft_tree is not None else segment.target_verify_tree_nodes
+                    for segment in segments
+                ],
             )
         return verify_latency_ms(self.config["edge"], [1 for _ in segments])
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from src.config import load_config
+from src.latency import verify_latency_ms
 from src.methods import get_method_spec
 from src.model_runner import FakeModelRunner
 from src.simulator import Simulator
@@ -11,6 +13,70 @@ from tests.common import accepting_model_runner, rejecting_model_runner, small_c
 
 
 class SpecEdgeTreeCoreTest(unittest.TestCase):
+    def test_tree_verify_latency_is_one_forward_independent_of_node_count(self) -> None:
+        config, model_runner, workload = small_config(num_requests=1, output_len=4)
+        simulator = Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_tree",
+        )
+        expected = verify_latency_ms(config["edge"], [1])
+
+        for node_count in (1, 32, 64):
+            segment = SimpleNamespace(
+                draft_tree=object(),
+                target_verify_tree_nodes=node_count,
+            )
+            self.assertEqual(
+                simulator._verify_latency_for_segments([segment]),
+                expected,
+            )
+
+    def test_tree_batch_uses_same_work_units_as_linear_batch(self) -> None:
+        config, model_runner, workload = small_config(num_requests=2, output_len=4)
+        simulator = Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_tree",
+        )
+        tree_segments = [
+            SimpleNamespace(draft_tree=object(), target_verify_tree_nodes=node_count)
+            for node_count in (32, 64)
+        ]
+        linear_segments = [
+            SimpleNamespace(draft_tree=None, target_verify_tree_nodes=1)
+            for _ in tree_segments
+        ]
+
+        self.assertEqual(
+            simulator._verify_latency_for_segments(tree_segments),
+            simulator._verify_latency_for_segments(linear_segments),
+        )
+
+    def test_tree_verify_trace_retains_original_node_count(self) -> None:
+        config, model_runner, workload = small_config(num_requests=1, output_len=4)
+        result = Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            "specedge_tree",
+        ).run()
+        event = next(
+            item for item in result.event_trace if item["event"] == "global_batch_verify"
+        )
+        traced_segments = [result.segments[index] for index in event["segment_ids"]]
+
+        self.assertEqual(
+            event["target_verify_tree_nodes"],
+            max(segment.target_verify_tree_nodes for segment in traced_segments),
+        )
+        self.assertGreater(event["target_verify_tree_nodes"], 1)
+
     def test_specedge_tree_method_is_registered(self) -> None:
         config = load_config("configs/default.yaml")
 
