@@ -6,6 +6,7 @@ import csv
 import gc
 import math
 import inspect
+import os
 import statistics
 import sys
 from dataclasses import dataclass
@@ -307,7 +308,12 @@ def write_csv(path: str | Path, rows: Sequence[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
-    temporary.replace(output_path)
+    os.replace(temporary, output_path)
+
+
+def _persisted_csv_row_count(path: str | Path) -> int:
+    with Path(path).open(newline="", encoding="utf-8") as handle:
+        return sum(1 for _ in csv.DictReader(handle))
 
 
 def _base_row(
@@ -382,11 +388,12 @@ def profile_matrix(
     for spec in specs:
         groups.setdefault((spec.batch_size, spec.context_length), []).append(spec)
 
-    rows: list[dict[str, Any]] = []
+    expected_row_count = len(specs)
+    accumulated_rows: list[dict[str, Any]] = []
 
     def emit(row: dict[str, Any]) -> None:
-        rows.append(row)
-        csv_writer(output_path, rows)
+        accumulated_rows.append(row)
+        csv_writer(output_path, tuple(accumulated_rows))
 
     for (batch_size, context_length), group_specs in groups.items():
         try:
@@ -426,7 +433,18 @@ def profile_matrix(
                 for spec in tree_specs:
                     emit(_success_row(spec, measurement, backend.metadata, warmup, repeat))
 
-    return rows
+    if len(accumulated_rows) != expected_row_count:
+        raise RuntimeError(
+            "accumulated profiling row count mismatch: "
+            f"expected {expected_row_count}, got {len(accumulated_rows)}"
+        )
+    persisted_row_count = _persisted_csv_row_count(output_path)
+    if persisted_row_count != expected_row_count:
+        raise RuntimeError(
+            "persisted CSV row count mismatch: "
+            f"expected {expected_row_count}, got {persisted_row_count}"
+        )
+    return accumulated_rows
 
 
 def measure_cuda_forward(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -387,6 +388,79 @@ def test_csv_is_rewritten_after_every_emitted_row(tmp_path: Path) -> None:
     assert written[0]["warmup"] == "10"
     assert written[0]["repeat"] == "30"
     assert written[0]["peak_memory_mb"] == "123.5"
+
+
+def test_incremental_csv_preserves_every_batch_and_context_group(
+    tmp_path: Path,
+) -> None:
+    backend = FakeBackend()
+    specs = profiler.expand_profile_specs(
+        batch_sizes=(1, 2),
+        context_lengths=(128, 512),
+        gammas=(1,),
+        tree_nodes=(8,),
+    )
+    output = tmp_path / "profile.csv"
+
+    accumulated_rows = profiler.profile_matrix(
+        backend=backend,
+        specs=specs,
+        warmup=1,
+        repeat=2,
+        output_path=output,
+    )
+
+    with output.open(newline="", encoding="utf-8") as handle:
+        persisted_rows = list(csv.DictReader(handle))
+    expected_groups = {(1, 128), (1, 512), (2, 128), (2, 512)}
+    persisted_groups = {
+        (int(row["batch_size"]), int(row["context_length"]))
+        for row in persisted_rows
+    }
+    assert len(specs) == 12
+    assert len(accumulated_rows) == len(persisted_rows) == len(specs)
+    assert persisted_groups == expected_groups
+
+
+def test_write_csv_uses_os_replace_for_atomic_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replacements: list[tuple[Path, Path]] = []
+    real_replace = os.replace
+
+    def recording_replace(source, destination) -> None:
+        replacements.append((Path(source), Path(destination)))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(profiler.os, "replace", recording_replace)
+    output = tmp_path / "profile.csv"
+
+    profiler.write_csv(output, [{"method": "target_decode"}])
+
+    assert replacements == [(output.with_suffix(".csv.tmp"), output)]
+
+
+def test_final_validation_rejects_truncated_persisted_csv(tmp_path: Path) -> None:
+    backend = FakeBackend()
+    specs = profiler.expand_profile_specs(
+        batch_sizes=(1, 2),
+        context_lengths=(128, 512),
+        gammas=(1,),
+        tree_nodes=(8,),
+    )
+
+    def truncating_writer(path, accumulated_rows) -> None:
+        profiler.write_csv(path, accumulated_rows[-3:])
+
+    with pytest.raises(RuntimeError, match="persisted CSV row count"):
+        profiler.profile_matrix(
+            backend=backend,
+            specs=specs,
+            warmup=1,
+            repeat=2,
+            output_path=tmp_path / "profile.csv",
+            csv_writer=truncating_writer,
+        )
 
 
 def test_non_oom_backend_failure_is_not_silenced(tmp_path: Path) -> None:
