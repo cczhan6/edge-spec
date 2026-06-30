@@ -593,3 +593,58 @@ def test_scheduler_prediction_remains_analytical_in_profile_mode(
 
     assert predicted == verify_latency_ms(config["edge"], [1])
     query.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ("server_only_tree", "specedge_tree"))
+def test_canonical_tree_paths_query_fixed_forward_metadata(
+    method: str,
+    integration_profile_path: Path,
+) -> None:
+    simulator, result, calls = _run_with_recorded_profile(
+        method,
+        integration_profile_path,
+        num_requests=2,
+        output_len=6,
+    )
+    tree_calls = [
+        call for call in calls if call["method"] == "tree_verification"
+    ]
+    verify_events = [
+        event
+        for event in result.event_trace
+        if event["event"] in {"server_only_verify", "global_batch_verify"}
+    ]
+
+    assert len(tree_calls) == len(verify_events)
+    for call, event in zip(tree_calls, verify_events):
+        segment_ids = event.get("segment_ids")
+        if segment_ids is None:
+            segment_ids = [event["segment_id"]]
+        segments = [simulator.segments[index] for index in segment_ids]
+        assert call["batch_size"] == len(segments)
+        assert call["context_lengths"] == tuple(
+            len(segment.prefix_ids) for segment in segments
+        )
+        assert call["tree_nodes"] == max(
+            segment.target_verify_tree_nodes for segment in segments
+        )
+        assert call["tree_nodes"] >= 1
+
+
+def test_tree_profile_mode_guard_rejects_non_approximate_result() -> None:
+    config, _, _ = small_config(num_requests=1, output_len=1)
+    model = TargetLatencyModel(config)
+    model.mode = "profile"
+    model._profile = SimpleNamespace(
+        query=lambda *args, **kwargs: SimpleNamespace(
+            tree_mode="real_tree_kernel",
+            total_latency_ms=1.0,
+        )
+    )
+
+    with pytest.raises(ValueError, match="fixed_forward_approx"):
+        model.tree_verification_latency_ms(
+            context_lengths=(128,),
+            tree_nodes=64,
+            analytical_work_units=(1,),
+        )

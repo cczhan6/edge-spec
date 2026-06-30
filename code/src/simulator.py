@@ -747,19 +747,29 @@ class Simulator:
         return tuple(contexts)
 
     def _verify_latency_for_segments(self, segments: Sequence[Segment]) -> float:
-        contexts = self._verification_context_lengths(segments)
         analytical_work_units = (
             tuple(
-                    1 if segment.draft_tree is not None else segment.target_verify_tree_nodes
-                    for segment in segments
+                1 if segment.draft_tree is not None else segment.target_verify_tree_nodes
+                for segment in segments
             )
             if self._is_specedge_runtime()
             else tuple(1 for _ in segments)
         )
+        if self.target_latency.mode == "analytical":
+            return verify_latency_ms(self.config["edge"], analytical_work_units)
+        contexts = self._verification_context_lengths(segments)
         if self.spec.candidate_strategy == "linear":
             return self.target_latency.linear_verification_latency_ms(
                 context_lengths=contexts,
                 gamma=max(segment.verify_gamma for segment in segments),
+                analytical_work_units=analytical_work_units,
+            )
+        if self.spec.candidate_strategy == "tree":
+            return self.target_latency.tree_verification_latency_ms(
+                context_lengths=contexts,
+                tree_nodes=max(
+                    segment.target_verify_tree_nodes for segment in segments
+                ),
                 analytical_work_units=analytical_work_units,
             )
         return verify_latency_ms(self.config["edge"], analytical_work_units)
