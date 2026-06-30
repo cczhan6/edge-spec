@@ -14,6 +14,7 @@ from src.dip_sd import (
     DipSDUser,
     optimize_dip_sd,
 )
+from src.edge_compute import EdgeComputeModel
 from src.entities import (
     ACTIVE_SEGMENT_STATUSES,
     FINAL_SEGMENT_STATUSES,
@@ -86,6 +87,7 @@ class Simulator:
         self.scenario = scenario
         self.spec: MethodSpec = get_method_spec(method, config)
         self.devices = build_devices(config, self.spec.device_pool)
+        self.edge_compute = EdgeComputeModel(config, self.devices, self.spec.device_pool)
         self.device_runtimes = [DeviceRuntime(device) for device in self.devices]
         self.requests: list[Request] = []
         self.segments: list[Segment] = []

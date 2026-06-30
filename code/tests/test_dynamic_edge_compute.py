@@ -186,3 +186,27 @@ class EdgeComputeModelTest(unittest.TestCase):
             model.state(index).draft_token_rate_tok_s for index in (0, 1, 2)
         ]
         self.assertEqual(low_rates, [21.0, 22.0, 23.0])
+
+
+class SimulatorEdgeComputeOwnershipTest(unittest.TestCase):
+    def test_simulator_owns_one_model_with_selected_pool_devices(self) -> None:
+        config, runner, workload = small_config(num_requests=1, output_len=2)
+        simulator = Simulator(config, runner, workload, "test", "full")
+
+        self.assertIsInstance(simulator.edge_compute, EdgeComputeModel)
+        self.assertEqual(
+            simulator.edge_compute.current_rate(0),
+            simulator.devices[0].draft_token_rate_tok_s,
+        )
+        self.assertIs(simulator.edge_compute, simulator.edge_compute)
+
+    def test_enabled_simulators_reproduce_the_same_initial_mapping(self) -> None:
+        config, runner, workload = small_config(num_requests=3, output_len=2)
+        enable_dynamic_edge(config)
+        first = Simulator(config, runner, workload, "test", "full")
+        second = Simulator(copy.deepcopy(config), runner, workload, "test", "dip_sd")
+
+        self.assertEqual(
+            [first.edge_compute.current_rate(index) for index in range(3)],
+            [second.edge_compute.current_rate(index) for index in range(3)],
+        )
