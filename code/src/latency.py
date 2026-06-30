@@ -4,7 +4,9 @@ from collections import defaultdict, deque
 from collections.abc import Sequence
 from typing import Any
 
+from src.config import resolve_target_latency_profile_path
 from src.entities import Device
+from src.verification_latency_profile import VerificationLatencyProfile
 
 
 def draft_latency_ms(device: Device, gamma: int) -> float:
@@ -30,6 +32,75 @@ def target_only_latency_ms(edge: dict[str, Any], output_tokens: int) -> float:
     return float(edge["target_only_startup_ms"]) + (
         1000.0 * output_tokens / float(edge["target_only_token_rate_tok_s"])
     )
+
+
+class TargetLatencyModel:
+    """Shared fixed-capacity target latency facade for one simulator."""
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.edge = config["edge"]
+        target = config.get("target_latency", {"mode": "analytical"})
+        self.mode = str(target.get("mode", "analytical"))
+        self._profile: VerificationLatencyProfile | None = None
+        if self.mode == "profile":
+            path = resolve_target_latency_profile_path(str(target["profile_path"]))
+            self._profile = VerificationLatencyProfile(
+                path,
+                metric=str(target.get("metric", "p50_ms")),
+            )
+
+    def target_decode_latency_ms(
+        self,
+        *,
+        context_lengths: Sequence[int],
+        output_tokens: int = 1,
+    ) -> float:
+        if self._profile is None:
+            return target_only_latency_ms(self.edge, output_tokens)
+        if output_tokens != 1:
+            raise ValueError(
+                "profile target decode represents exactly one output token"
+            )
+        return self._profile.query(
+            "target_decode",
+            batch_size=len(context_lengths),
+            context_lengths=context_lengths,
+        ).total_latency_ms
+
+    def linear_verification_latency_ms(
+        self,
+        *,
+        context_lengths: Sequence[int],
+        gamma: int,
+        analytical_work_units: Sequence[int],
+    ) -> float:
+        if self._profile is None:
+            return verify_latency_ms(self.edge, analytical_work_units)
+        return self._profile.query(
+            "linear_verification",
+            batch_size=len(context_lengths),
+            context_lengths=context_lengths,
+            gamma=gamma,
+        ).total_latency_ms
+
+    def tree_verification_latency_ms(
+        self,
+        *,
+        context_lengths: Sequence[int],
+        tree_nodes: int,
+        analytical_work_units: Sequence[int],
+    ) -> float:
+        if self._profile is None:
+            return verify_latency_ms(self.edge, analytical_work_units)
+        result = self._profile.query(
+            "tree_verification",
+            batch_size=len(context_lengths),
+            context_lengths=context_lengths,
+            tree_nodes=tree_nodes,
+        )
+        if result.tree_mode != "fixed_forward_approx":
+            raise ValueError("tree latency profile must use fixed_forward_approx")
+        return result.total_latency_ms
 
 
 class AcceptanceWindowEstimator:
