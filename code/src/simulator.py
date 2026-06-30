@@ -2026,13 +2026,14 @@ class Simulator:
             proposed_count = _tree_proposed_count(proactive_tree, proactive_ids)
         if not proactive_ids:
             return
-        proactive_compute_ms = draft_latency_ms(
-            self.devices[segment.device_id],
-            processed_candidates,
-        )
         runtime = self.device_runtimes[segment.device_id]
         if runtime.active_segment_id is not None:
             return
+        compute = self.edge_compute.snapshot(segment.device_id)
+        proactive_compute_ms = self.edge_compute.latency_ms(
+            compute,
+            processed_candidates,
+        )
         finish_ms = start_ms + proactive_compute_ms
         runtime.active_segment_id = segment.segment_id
         runtime.busy_until_ms = finish_ms
@@ -2063,6 +2064,7 @@ class Simulator:
                 "retained_tree_nodes": retained_nodes,
                 "target_verify_tree_nodes": target_verify_nodes,
                 "tree_strategy": proactive_tree_plan.strategy,
+                **self._edge_compute_trace_fields(compute),
             }
         )
         self._schedule(finish_ms, EventType.PROACTIVE_DRAFT_DONE, segment.segment_id)

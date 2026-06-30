@@ -325,3 +325,31 @@ class OrdinaryDraftSnapshotTest(unittest.TestCase):
             old_rate,
             simulator.edge_compute.snapshot(0).draft_token_rate_tok_s,
         )
+
+
+class ProactiveDraftSnapshotTest(unittest.TestCase):
+    def test_proactive_draft_uses_its_own_start_snapshot(self) -> None:
+        config, _, workload = dynamic_single_device_case(
+            num_requests=1,
+            output_len=12,
+        )
+        config["specedge"]["server_batch_size"] = 1
+        simulator = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "test",
+            "specedge_linear",
+        )
+        result = simulator.run()
+        event = next(
+            item for item in result.event_trace if item["event"] == "proactive_draft"
+        )
+
+        expected = simulator.devices[event["device_id"]].draft_startup_ms + (
+            1000.0
+            * event["processed_candidate_count"]
+            / event["draft_token_rate_tok_s"]
+        )
+        self.assertEqual(event["edge_compute_epoch"], 0)
+        self.assertAlmostEqual(event["compute_ms"], expected)
