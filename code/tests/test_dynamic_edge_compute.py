@@ -387,3 +387,104 @@ class DipSDEdgeComputeTest(unittest.TestCase):
         )
         self.assertEqual(event["edge_compute_epoch"], 0)
         self.assertAlmostEqual(event["compute_ms"], expected)
+
+
+class DynamicEdgeIsolationTest(unittest.TestCase):
+    METHODS = (
+        "target_only",
+        "server_only_linear",
+        "server_only_tree",
+        "specedge_linear",
+        "specedge_tree",
+        "dip_sd",
+        "full",
+    )
+
+    def test_disabled_and_legacy_missing_config_are_trace_identical(self) -> None:
+        for method in self.METHODS:
+            with self.subTest(method=method):
+                config, runner, workload = small_config(
+                    num_requests=2,
+                    output_len=4,
+                )
+                explicit = Simulator(
+                    copy.deepcopy(config), runner, workload, "test", method
+                ).run()
+                legacy_config = copy.deepcopy(config)
+                del legacy_config["dynamic_edge_compute"]
+                for pool in legacy_config["device_pools"].values():
+                    for template in pool["templates"].values():
+                        template.pop("dynamic_draft_token_rate_range_tok_s", None)
+                legacy = Simulator(
+                    legacy_config, runner, workload, "test", method
+                ).run()
+
+                self.assertEqual(explicit.event_trace, legacy.event_trace)
+                self.assertEqual(
+                    [request.finish_time_ms for request in explicit.requests],
+                    [request.finish_time_ms for request in legacy.requests],
+                )
+
+    def test_enabled_mode_does_not_change_target_or_server_compute(self) -> None:
+        for method, event_name in (
+            ("target_only", "target_only_service"),
+            ("server_only_linear", "server_only_draft"),
+            ("server_only_tree", "server_only_draft"),
+        ):
+            with self.subTest(method=method):
+                config, runner, workload = small_config(
+                    num_requests=1,
+                    output_len=4,
+                )
+                disabled = Simulator(
+                    copy.deepcopy(config), runner, workload, "test", method
+                ).run()
+                enabled_config = enable_dynamic_edge(copy.deepcopy(config))
+                enabled = Simulator(
+                    enabled_config, runner, workload, "test", method
+                ).run()
+                disabled_events = [
+                    event["compute_ms"]
+                    for event in disabled.event_trace
+                    if event["event"] == event_name
+                ]
+                enabled_events = [
+                    event["compute_ms"]
+                    for event in enabled.event_trace
+                    if event["event"] == event_name
+                ]
+
+                self.assertEqual(enabled_events, disabled_events)
+                self.assertFalse(
+                    any(
+                        "edge_compute_epoch" in event
+                        for event in enabled.event_trace
+                        if event["event"] == event_name
+                    )
+                )
+
+    def test_dynamic_runs_preserve_greedy_outputs_for_all_methods(self) -> None:
+        config, _, workload = small_config(num_requests=2, output_len=6)
+        enable_dynamic_edge(config)
+        target = Simulator(
+            copy.deepcopy(config),
+            accepting_model_runner(),
+            workload,
+            "test",
+            "target_only",
+        ).run()
+        expected = [request.generated_ids for request in target.requests]
+
+        for method in self.METHODS:
+            with self.subTest(method=method):
+                result = Simulator(
+                    copy.deepcopy(config),
+                    accepting_model_runner(),
+                    workload,
+                    "test",
+                    method,
+                ).run()
+                self.assertEqual(
+                    [request.generated_ids for request in result.requests],
+                    expected,
+                )
