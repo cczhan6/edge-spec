@@ -353,3 +353,37 @@ class ProactiveDraftSnapshotTest(unittest.TestCase):
         )
         self.assertEqual(event["edge_compute_epoch"], 0)
         self.assertAlmostEqual(event["compute_ms"], expected)
+
+
+class DipSDEdgeComputeTest(unittest.TestCase):
+    def test_dip_sd_problem_reads_current_device_rate(self) -> None:
+        config, runner, workload = dynamic_single_device_case(
+            num_requests=1,
+            output_len=4,
+        )
+        simulator = Simulator(config, runner, workload, "test", "dip_sd")
+        simulator._schedule_request_arrivals()
+        rate = simulator.edge_compute.current_rate(0)
+
+        problem = simulator._build_dip_sd_problem([0], 0)
+
+        self.assertEqual(problem.users[0].draft_latency_overhead_ms, 1000.0 / rate)
+
+    def test_dip_sd_actual_draft_uses_start_snapshot_and_provenance(self) -> None:
+        config, runner, workload = dynamic_single_device_case(
+            num_requests=1,
+            output_len=4,
+        )
+        simulator = Simulator(config, runner, workload, "test", "dip_sd")
+        result = simulator.run()
+        event = next(
+            item for item in result.event_trace if item["event"] == "dip_sd_draft"
+        )
+
+        expected = simulator.devices[0].draft_startup_ms + (
+            1000.0
+            * result.segments[event["segment_id"]].processed_candidate_count
+            / event["draft_token_rate_tok_s"]
+        )
+        self.assertEqual(event["edge_compute_epoch"], 0)
+        self.assertAlmostEqual(event["compute_ms"], expected)

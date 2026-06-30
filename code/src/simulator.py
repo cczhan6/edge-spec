@@ -29,7 +29,6 @@ from src.events import Event, EventType
 from src.latency import (
     AcceptanceWindowEstimator,
     TargetLatencyModel,
-    draft_latency_ms,
     expected_emitted_tokens,
     verify_latency_ms,
 )
@@ -289,6 +288,7 @@ class Simulator:
                         request.arrival_time_ms,
                         runtime.busy_until_ms,
                     )
+                    compute = self.edge_compute.snapshot(request.device_id)
                     draft_ids = self.model_runner.draft(
                         device.drafter_profile,
                         prefix_ids,
@@ -296,7 +296,10 @@ class Simulator:
                     )
                     if not draft_ids:
                         raise RuntimeError("semantic drafter returned an empty dip_sd segment")
-                    draft_compute_ms = draft_latency_ms(device, len(draft_ids))
+                    draft_compute_ms = self.edge_compute.latency_ms(
+                        compute,
+                        len(draft_ids),
+                    )
                     draft_done_ms = draft_start_ms + draft_compute_ms
                     runtime.busy_until_ms = draft_done_ms
                     uplink_payload_bytes = self._payload_bytes(len(draft_ids))
@@ -355,6 +358,7 @@ class Simulator:
                             "compute_ms": draft_compute_ms,
                             "uplink_ms": uplink_delay_ms,
                             "uplink_payload_bytes": uplink_payload_bytes,
+                            **self._edge_compute_trace_fields(compute),
                         }
                     )
                 if not segments:
@@ -510,7 +514,9 @@ class Simulator:
                     acceptance_estimate=max(1e-6, min(0.999999, acceptance_estimate)),
                     communication_latency_ms=communication_latency_ms,
                     draft_latency_scale=0.0,
-                    draft_latency_overhead_ms=1000.0 / device.draft_token_rate_tok_s,
+                    draft_latency_overhead_ms=(
+                        1000.0 / self.edge_compute.current_rate(request.device_id)
+                    ),
                     draft_model=DipSDModelProfile(),
                 )
             )
