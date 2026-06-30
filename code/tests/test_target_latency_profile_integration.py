@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -449,3 +450,146 @@ def test_profile_target_only_rejects_context_beyond_profile(
             "combined_strong_heterogeneous",
             "target_only",
         ).run()
+
+
+def _run_with_recorded_profile(
+    method: str,
+    profile_path: Path,
+    *,
+    num_requests: int = 2,
+    output_len: int = 6,
+):
+    config, model_runner, workload = small_config(num_requests, output_len)
+    config["target_latency"].update(
+        mode="profile",
+        profile_path=str(profile_path),
+        metric="p50_ms",
+    )
+    config["speculation"]["gamma_fixed"] = 2
+    config["speculation"]["gamma_candidates"] = [2]
+    config["specedge"]["server_batch_size"] = num_requests
+    calls: list[dict[str, object]] = []
+
+    class RecordingProfile(VerificationLatencyProfile):
+        def query(self, method_name, **kwargs):
+            calls.append({"method": method_name, **kwargs})
+            return super().query(method_name, **kwargs)
+
+    with patch("src.latency.VerificationLatencyProfile", RecordingProfile):
+        simulator = Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            method,
+        )
+        result = simulator.run()
+    return simulator, result, calls
+
+
+@pytest.mark.parametrize(
+    "method", ("server_only_linear", "specedge_linear", "dip_sd")
+)
+def test_canonical_linear_paths_query_once_per_logical_batch(
+    method: str,
+    integration_profile_path: Path,
+) -> None:
+    simulator, result, calls = _run_with_recorded_profile(
+        method, integration_profile_path
+    )
+    linear_calls = [
+        call for call in calls if call["method"] == "linear_verification"
+    ]
+    verify_events = [
+        event
+        for event in result.event_trace
+        if event["event"]
+        in {"server_only_verify", "global_batch_verify", "dip_sd_batch_verify"}
+    ]
+
+    assert len(linear_calls) == len(verify_events)
+    for call, event in zip(linear_calls, verify_events):
+        segment_ids = event.get("segment_ids")
+        if segment_ids is None:
+            segment_ids = [event["segment_id"]]
+        segments = [simulator.segments[index] for index in segment_ids]
+        assert call["batch_size"] == len(segments)
+        assert call["context_lengths"] == tuple(
+            len(segment.prefix_ids) for segment in segments
+        )
+        assert call["gamma"] == max(
+            len(segment.draft_ids) for segment in segments
+        )
+
+
+def test_linear_profile_receives_mixed_context_and_actual_longest_gamma(
+    integration_profile_path: Path,
+) -> None:
+    config, model_runner, workload = small_config(num_requests=3, output_len=4)
+    config["target_latency"].update(
+        mode="profile",
+        profile_path=str(integration_profile_path),
+        metric="p50_ms",
+    )
+    simulator = Simulator(
+        config,
+        model_runner,
+        workload,
+        "combined_strong_heterogeneous",
+        "specedge_linear",
+    )
+    simulator._schedule_request_arrivals()
+    simulator.requests[0].prompt_ids = [1] * 120
+    simulator.requests[1].prompt_ids = [1] * 500
+    simulator.requests[2].prompt_ids = [1] * 900
+    segments = []
+    for request_id, gamma in enumerate((2, 4, 3)):
+        segments.append(
+            SimpleNamespace(
+                segment_id=request_id,
+                request_id=request_id,
+                base_pos=0,
+                prefix_ids=list(simulator.requests[request_id].prompt_ids),
+                draft_ids=[2] * gamma,
+                verify_gamma=gamma,
+                draft_tree=None,
+                target_verify_tree_nodes=1,
+            )
+        )
+    assert simulator.target_latency._profile is not None
+
+    with patch.object(
+        simulator.target_latency._profile,
+        "query",
+        wraps=simulator.target_latency._profile.query,
+    ) as query:
+        latency = simulator._verify_latency_for_segments(segments)
+
+    assert latency == 484.0
+    query.assert_called_once_with(
+        "linear_verification",
+        batch_size=3,
+        context_lengths=(120, 500, 900),
+        gamma=4,
+    )
+
+
+def test_scheduler_prediction_remains_analytical_in_profile_mode(
+    integration_profile_path: Path,
+) -> None:
+    config = _profile_config(integration_profile_path)
+    _, model_runner, workload = small_config(num_requests=1, output_len=2)
+    simulator = Simulator(
+        config,
+        model_runner,
+        workload,
+        "combined_strong_heterogeneous",
+        "specedge_linear",
+    )
+    assert simulator.target_latency._profile is not None
+
+    with patch.object(simulator.target_latency._profile, "query") as query:
+        predicted = simulator.predict_verify_latency_ms(8)
+
+    assert predicted == verify_latency_ms(config["edge"], [1])
+    query.assert_not_called()
