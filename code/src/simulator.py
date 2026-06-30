@@ -14,7 +14,7 @@ from src.dip_sd import (
     DipSDUser,
     optimize_dip_sd,
 )
-from src.edge_compute import EdgeComputeModel
+from src.edge_compute import EdgeComputeModel, EdgeComputeSnapshot
 from src.entities import (
     ACTIVE_SEGMENT_STATUSES,
     FINAL_SEGMENT_STATUSES,
@@ -1186,7 +1186,14 @@ class Simulator:
         remaining = min(remaining, self._remaining_unconfirmed_token_budget(request))
         if remaining <= 0:
             return
-        gamma = self._select_gamma(request, runtime.device, now_ms, remaining)
+        compute = self.edge_compute.snapshot(request.device_id)
+        gamma = self._select_gamma(
+            request,
+            runtime.device,
+            now_ms,
+            remaining,
+            compute,
+        )
         if self.spec.runtime == "specedge":
             gamma = min(gamma, self._specedge_max_beam_len())
         use_proactive = bool(
@@ -1299,12 +1306,12 @@ class Simulator:
             if use_proactive and fresh_build is not None
             else processed_candidates
         )
-        analytical_ms = draft_latency_ms(
-            runtime.device,
+        analytical_ms = self.edge_compute.latency_ms(
+            compute,
             processed_candidates,
         )
         fresh_compute_ms = (
-            draft_latency_ms(runtime.device, fresh_processed_candidates)
+            self.edge_compute.latency_ms(compute, fresh_processed_candidates)
             if fresh_ids
             else 0.0
         )
@@ -1327,7 +1334,8 @@ class Simulator:
                 runtime.device,
                 beam_len,
                 expected_emitted_tokens(alpha, beam_len),
-            ) - draft_latency_ms(runtime.device, processed_candidates)
+                compute,
+            ) - self.edge_compute.latency_ms(compute, processed_candidates)
             pipeline_edge_cycle_ms = duration_ms + network_cycle_ms
             pipeline_alignment_error_ms = abs(pipeline_target_ms - pipeline_edge_cycle_ms)
         segment = Segment(
@@ -1398,6 +1406,7 @@ class Simulator:
                 "pipeline_alignment_error_ms": pipeline_alignment_error_ms,
                 "proactive_used": use_proactive,
                 "proactive_reused_tokens": len(retained_proactive_ids),
+                **self._edge_compute_trace_fields(compute),
             }
         )
         if self.spec.runtime == "specedge":
@@ -1426,6 +1435,7 @@ class Simulator:
                     "pipeline_alignment_error_ms": pipeline_alignment_error_ms,
                     "proactive_used": use_proactive,
                     "proactive_reused_tokens": len(retained_proactive_ids),
+                    **self._edge_compute_trace_fields(compute),
                 }
             )
         self._schedule(now_ms + duration_ms, EventType.DRAFT_DONE, segment.segment_id)
@@ -1451,6 +1461,7 @@ class Simulator:
         device: Device,
         now_ms: float,
         remaining: int,
+        compute: EdgeComputeSnapshot | None = None,
     ) -> int:
         fixed = min(int(self.config["speculation"]["gamma_fixed"]), remaining)
         if self.spec.runtime == "specedge":
@@ -1496,7 +1507,10 @@ class Simulator:
             draft_ms = (
                 self._server_only_draft_latency_ms(gamma)
                 if self._is_server_only_runtime()
-                else draft_latency_ms(device, gamma)
+                else self.edge_compute.latency_ms(
+                    compute or self.edge_compute.snapshot(device.device_id),
+                    gamma,
+                )
             )
             latency = (
                 draft_ms
@@ -1513,7 +1527,13 @@ class Simulator:
         server_busy_gap_ms = max(0.0, self._batch_busy_until_ms - now_ms)
         return max(self._last_specedge_verify_ms, server_busy_gap_ms)
 
-    def _specedge_edge_cycle_ms(self, device: Device, gamma: int, emitted_tokens: float) -> float:
+    def _specedge_edge_cycle_ms(
+        self,
+        device: Device,
+        gamma: int,
+        emitted_tokens: float,
+        compute: EdgeComputeSnapshot,
+    ) -> float:
         tree_plan = self._specedge_tree_plan(gamma)
         uplink_ms = self._speculative_network_delay_ms(
             device,
@@ -1527,7 +1547,22 @@ class Simulator:
             "downlink",
             f"pipeline-down:{device.device_id}:{gamma}",
         )
-        return draft_latency_ms(device, tree_plan.draft_compute_nodes) + uplink_ms + downlink_ms
+        return (
+            self.edge_compute.latency_ms(compute, tree_plan.draft_compute_nodes)
+            + uplink_ms
+            + downlink_ms
+        )
+
+    def _edge_compute_trace_fields(
+        self,
+        compute: EdgeComputeSnapshot,
+    ) -> dict[str, Any]:
+        if not self.edge_compute.enabled:
+            return {}
+        return {
+            "edge_compute_epoch": compute.epoch,
+            "draft_token_rate_tok_s": compute.draft_token_rate_tok_s,
+        }
 
     def _predicted_target_wait_ms(self, now_ms: float) -> float:
         if self._is_server_only_runtime():

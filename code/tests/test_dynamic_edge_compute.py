@@ -265,3 +265,63 @@ class RequestFinalizationTest(unittest.TestCase):
             sum(event["event"] == "request_finish" for event in simulator._trace),
             1,
         )
+
+
+class OrdinaryDraftSnapshotTest(unittest.TestCase):
+    def test_full_draft_uses_snapshot_rate_and_records_provenance(self) -> None:
+        config, _, workload = dynamic_single_device_case(
+            num_requests=1,
+            output_len=6,
+        )
+        simulator = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "test",
+            "full",
+        )
+        result = simulator.run()
+        event = next(
+            item for item in result.event_trace if item["event"] == "draft_compute"
+        )
+        segment = result.segments[event["segment_id"]]
+
+        expected = simulator.devices[0].draft_startup_ms + (
+            1000.0
+            * segment.processed_candidate_count
+            / event["draft_token_rate_tok_s"]
+        )
+        self.assertEqual(event["edge_compute_epoch"], 0)
+        self.assertAlmostEqual(segment.draft_analytical_ms, expected)
+
+    def test_started_ordinary_draft_duration_is_not_recomputed_after_epoch_change(
+        self,
+    ) -> None:
+        config, _, workload = dynamic_single_device_case(
+            num_requests=1,
+            output_len=6,
+        )
+        simulator = Simulator(
+            config,
+            accepting_model_runner(),
+            workload,
+            "test",
+            "full",
+        )
+        simulator._schedule_request_arrivals()
+        request = simulator.requests[0]
+        runtime = simulator.device_runtimes[0]
+        simulator._start_draft(runtime, request, 0.0, 0.0)
+        segment = simulator.segments[0]
+        old_duration = segment.draft_compute_ms
+        old_rate = simulator._trace[-1]["draft_token_rate_tok_s"]
+
+        for _ in range(5):
+            simulator.edge_compute.record_request_completion(0)
+
+        self.assertEqual(segment.draft_compute_ms, old_duration)
+        self.assertEqual(simulator._trace[-1]["draft_token_rate_tok_s"], old_rate)
+        self.assertNotEqual(
+            old_rate,
+            simulator.edge_compute.snapshot(0).draft_token_rate_tok_s,
+        )
