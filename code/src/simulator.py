@@ -756,6 +756,14 @@ class Simulator:
             else tuple(1 for _ in segments)
         )
         if self.target_latency.mode == "analytical":
+            if self.spec.candidate_strategy == "linear":
+                return self.target_latency.linear_verification_latency_ms(
+                    analytical_work_units=analytical_work_units,
+                )
+            if self.spec.candidate_strategy == "tree":
+                return self.target_latency.tree_verification_latency_ms(
+                    analytical_work_units=analytical_work_units,
+                )
             return verify_latency_ms(self.config["edge"], analytical_work_units)
         contexts = self._verification_context_lengths(segments)
         if self.spec.candidate_strategy == "linear":

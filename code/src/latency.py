@@ -70,12 +70,16 @@ class TargetLatencyModel:
     def linear_verification_latency_ms(
         self,
         *,
-        context_lengths: Sequence[int],
-        gamma: int,
         analytical_work_units: Sequence[int],
+        context_lengths: Sequence[int] | None = None,
+        gamma: int | None = None,
     ) -> float:
         if self._profile is None:
             return verify_latency_ms(self.edge, analytical_work_units)
+        if context_lengths is None or gamma is None:
+            raise ValueError(
+                "profile linear verification requires context_lengths and gamma"
+            )
         return self._profile.query(
             "linear_verification",
             batch_size=len(context_lengths),
@@ -86,12 +90,16 @@ class TargetLatencyModel:
     def tree_verification_latency_ms(
         self,
         *,
-        context_lengths: Sequence[int],
-        tree_nodes: int,
         analytical_work_units: Sequence[int],
+        context_lengths: Sequence[int] | None = None,
+        tree_nodes: int | None = None,
     ) -> float:
         if self._profile is None:
             return verify_latency_ms(self.edge, analytical_work_units)
+        if context_lengths is None or tree_nodes is None:
+            raise ValueError(
+                "profile tree verification requires context_lengths and tree_nodes"
+            )
         result = self._profile.query(
             "tree_verification",
             batch_size=len(context_lengths),

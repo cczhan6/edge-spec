@@ -648,3 +648,40 @@ def test_tree_profile_mode_guard_rejects_non_approximate_result() -> None:
             tree_nodes=64,
             analytical_work_units=(1,),
         )
+
+
+@pytest.mark.parametrize(
+    ("method", "facade_method", "draft_tree"),
+    (
+        ("specedge_linear", "linear_verification_latency_ms", None),
+        ("specedge_tree", "tree_verification_latency_ms", object()),
+    ),
+)
+def test_analytical_canonical_verification_routes_through_shared_facade(
+    method: str,
+    facade_method: str,
+    draft_tree: object | None,
+) -> None:
+    config, model_runner, workload = small_config(num_requests=1, output_len=2)
+    simulator = Simulator(
+        config,
+        model_runner,
+        workload,
+        "combined_strong_heterogeneous",
+        method,
+    )
+    segment = SimpleNamespace(
+        draft_tree=draft_tree,
+        target_verify_tree_nodes=64 if draft_tree is not None else 1,
+    )
+    latency_method = getattr(simulator.target_latency, facade_method)
+
+    with patch.object(
+        simulator.target_latency,
+        facade_method,
+        wraps=latency_method,
+    ) as routed:
+        latency = simulator._verify_latency_for_segments([segment])
+
+    assert latency == verify_latency_ms(config["edge"], [1])
+    routed.assert_called_once_with(analytical_work_units=(1,))
