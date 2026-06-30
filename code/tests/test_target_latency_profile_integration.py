@@ -13,7 +13,11 @@ from src.latency import (
     verify_latency_ms,
 )
 from src.simulator import Simulator
-from src.verification_latency_profile import ProfileValidationError
+from src.verification_latency_profile import (
+    ProfileValidationError,
+    VerificationLatencyProfile,
+)
+from src.workload import WorkloadItem
 from tests.common import accepting_model_runner, small_config
 
 
@@ -300,3 +304,148 @@ def test_profile_facade_rejects_unloadable_csv(tmp_path: Path) -> None:
 
     with pytest.raises(ProfileValidationError, match="missing required fields"):
         TargetLatencyModel(config)
+
+
+def test_simulator_constructs_profile_once_and_queries_each_decode_token(
+    integration_profile_path: Path,
+) -> None:
+    config, model_runner, workload = small_config(num_requests=1, output_len=3)
+    config["target_latency"].update(
+        mode="profile",
+        profile_path=str(integration_profile_path),
+        metric="p50_ms",
+    )
+    calls: list[dict[str, object]] = []
+
+    class RecordingProfile(VerificationLatencyProfile):
+        constructions = 0
+
+        def __init__(self, *args, **kwargs):
+            type(self).constructions += 1
+            super().__init__(*args, **kwargs)
+
+        def query(self, method, **kwargs):
+            calls.append({"method": method, **kwargs})
+            return super().query(method, **kwargs)
+
+    with patch("src.latency.VerificationLatencyProfile", RecordingProfile):
+        result = Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            "target_only",
+        ).run()
+
+    assert RecordingProfile.constructions == 1
+    assert [call["method"] for call in calls] == ["target_decode"] * 3
+    prompt = result.requests[0].prompt_token_count
+    assert [call["context_lengths"] for call in calls] == [
+        (prompt,),
+        (prompt + 1,),
+        (prompt + 2,),
+    ]
+    assert all(call["batch_size"] == 1 for call in calls)
+
+
+def test_profile_target_only_uses_cumulative_commit_timestamps(
+    integration_profile_path: Path,
+) -> None:
+    config, model_runner, _ = small_config(num_requests=1, output_len=3)
+    workload = [WorkloadItem("0", "x" * 127, 2)]
+    config["target_latency"].update(
+        mode="profile",
+        profile_path=str(integration_profile_path),
+        metric="p50_ms",
+    )
+
+    result = Simulator(
+        config,
+        model_runner,
+        workload,
+        "combined_strong_heterogeneous",
+        "target_only",
+    ).run()
+
+    request = result.requests[0]
+    event = next(
+        item for item in result.event_trace if item["event"] == "target_only_service"
+    )
+    assert request.committed_token_times_ms == [110.0, 220.0, 360.0]
+    assert event["compute_ms"] == 360.0
+    assert len(
+        [
+            item
+            for item in result.event_trace
+            if item["event"] == "target_only_service"
+        ]
+    ) == 1
+
+
+def test_analytical_target_only_preserves_total_and_timestamps() -> None:
+    config, model_runner, workload = small_config(num_requests=1, output_len=3)
+    config["edge"]["target_only_startup_ms"] = 7.0
+    config["target_latency"]["mode"] = "analytical"
+
+    result = Simulator(
+        config,
+        model_runner,
+        workload,
+        "combined_strong_heterogeneous",
+        "target_only",
+    ).run()
+
+    request = result.requests[0]
+    expected = target_only_latency_ms(config["edge"], 3)
+    interval = 1000.0 / config["edge"]["target_only_token_rate_tok_s"]
+    assert request.target_only_compute_ms == expected
+    assert request.committed_token_times_ms == [
+        expected - interval * 2,
+        expected - interval,
+        expected,
+    ]
+
+
+def test_analytical_simulator_never_constructs_or_reads_profile(
+    tmp_path: Path,
+) -> None:
+    config, model_runner, workload = small_config(num_requests=1, output_len=2)
+    config["target_latency"].update(
+        mode="analytical",
+        profile_path=str(tmp_path / "missing.csv"),
+    )
+
+    with patch(
+        "src.latency.VerificationLatencyProfile",
+        side_effect=AssertionError("analytical mode accessed profile CSV"),
+    ) as profile_type:
+        Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            "target_only",
+        ).run()
+
+    profile_type.assert_not_called()
+
+
+def test_profile_target_only_rejects_context_beyond_profile(
+    integration_profile_path: Path,
+) -> None:
+    config, model_runner, _ = small_config(num_requests=1, output_len=2)
+    workload = [WorkloadItem("0", "x" * 2048, 2)]
+    config["target_latency"].update(
+        mode="profile",
+        profile_path=str(integration_profile_path),
+        metric="p50_ms",
+    )
+
+    with pytest.raises(ValueError, match="context.*2048"):
+        Simulator(
+            config,
+            model_runner,
+            workload,
+            "combined_strong_heterogeneous",
+            "target_only",
+        ).run()

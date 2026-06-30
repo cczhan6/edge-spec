@@ -27,9 +27,9 @@ from src.entities import (
 from src.events import Event, EventType
 from src.latency import (
     AcceptanceWindowEstimator,
+    TargetLatencyModel,
     draft_latency_ms,
     expected_emitted_tokens,
-    target_only_latency_ms,
     verify_latency_ms,
 )
 from src.methods import MethodSpec, get_method_spec
@@ -79,6 +79,7 @@ class Simulator:
                 f"workload contains {len(workload)} prompts, expected {expected_requests}"
             )
         self.config = config
+        self.target_latency = TargetLatencyModel(config)
         self.model_runner = model_runner
         self.workload = list(workload)
         self._progress_callback = progress_callback
@@ -840,7 +841,32 @@ class Simulator:
     def _on_target_only_arrive_edge(self, now_ms: float, request_id: int) -> None:
         request = self.requests[request_id]
         generated_ids = self.model_runner.target_only(request.prompt_ids, request.output_len)
-        compute_ms = target_only_latency_ms(self.config["edge"], len(generated_ids))
+        if self.target_latency.mode == "analytical":
+            compute_ms = self.target_latency.target_decode_latency_ms(
+                context_lengths=(request.prompt_token_count,),
+                output_tokens=len(generated_ids),
+            )
+            token_interval_ms = 1000.0 / float(
+                self.config["edge"]["target_only_token_rate_tok_s"]
+            )
+            commit_offsets_ms = [
+                compute_ms
+                - token_interval_ms * (len(generated_ids) - index - 1)
+                for index in range(len(generated_ids))
+            ]
+        else:
+            step_latencies = [
+                self.target_latency.target_decode_latency_ms(
+                    context_lengths=(request.prompt_token_count + index,),
+                )
+                for index in range(len(generated_ids))
+            ]
+            elapsed = 0.0
+            commit_offsets_ms = []
+            for latency_ms in step_latencies:
+                elapsed += latency_ms
+                commit_offsets_ms.append(elapsed)
+            compute_ms = elapsed
         lane_id = min(
             range(len(self._target_only_available_ms)),
             key=self._target_only_available_ms.__getitem__,
@@ -849,12 +875,8 @@ class Simulator:
         finish_ms = start_ms + compute_ms
         self._target_only_available_ms[lane_id] = finish_ms
         request.generated_ids = generated_ids
-        token_interval_ms = 1000.0 / float(
-            self.config["edge"]["target_only_token_rate_tok_s"]
-        )
         request.committed_token_times_ms = [
-            finish_ms - token_interval_ms * (len(generated_ids) - index - 1)
-            for index in range(len(generated_ids))
+            start_ms + offset_ms for offset_ms in commit_offsets_ms
         ]
         request.edge_generated_ids = generated_ids.copy()
         request.target_only_queue_wait_ms = start_ms - now_ms
