@@ -6,6 +6,10 @@ simulation:
   request_arrival: burst
   poisson_rate_per_s: 20
 
+dynamic_edge_compute:
+  enabled: false
+  resample_every_completed_requests: 5
+
 experiment:
   contract_version: 1
   canonical_methods: ["target_only", "server_only_linear", "server_only_tree", "specedge_linear", "specedge_tree", "dip_sd"]
@@ -81,6 +85,7 @@ device_pools:
         count: 3
         drafter_profile: small
         draft_token_rate_tok_s: 25
+        dynamic_draft_token_rate_range_tok_s: [20, 30]
         draft_startup_ms: 1
         uplink_mbps: 5
         downlink_mbps: 30
@@ -90,6 +95,7 @@ device_pools:
         count: 3
         drafter_profile: medium
         draft_token_rate_tok_s: 60
+        dynamic_draft_token_rate_range_tok_s: [48, 72]
         draft_startup_ms: 2
         uplink_mbps: 25
         downlink_mbps: 100
@@ -99,6 +105,7 @@ device_pools:
         count: 2
         drafter_profile: large
         draft_token_rate_tok_s: 100
+        dynamic_draft_token_rate_range_tok_s: [80, 120]
         draft_startup_ms: 3
         uplink_mbps: 100
         downlink_mbps: 300
@@ -110,6 +117,7 @@ device_pools:
         count: 8
         drafter_profile: medium
         draft_token_rate_tok_s: 60
+        dynamic_draft_token_rate_range_tok_s: [48, 72]
         draft_startup_ms: 2
         uplink_mbps: 25
         downlink_mbps: 100

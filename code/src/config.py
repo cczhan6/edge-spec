@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,7 @@ def apply_tree_draft_strategy(config: dict[str, Any], strategy: str | None) -> d
 
 def validate_config(config: dict[str, Any]) -> None:
     simulation = config["simulation"]
+    _validate_dynamic_edge_compute(config)
     if int(simulation["num_requests"]) <= 0 or int(simulation["num_devices"]) <= 0:
         raise ValueError("num_requests and num_devices must be positive")
     edge = config["edge"]
@@ -239,6 +241,47 @@ def validate_config(config: dict[str, Any]) -> None:
                 f"device pool {pool_name} defines {count} devices, "
                 f"expected simulation.num_devices={simulation['num_devices']}"
             )
+
+
+def _validate_dynamic_edge_compute(config: dict[str, Any]) -> None:
+    dynamic = config.get(
+        "dynamic_edge_compute",
+        {"enabled": False, "resample_every_completed_requests": 5},
+    )
+    enabled = dynamic.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("dynamic_edge_compute.enabled must be a boolean")
+    if dynamic.get("resample_every_completed_requests", 5) != 5:
+        raise ValueError(
+            "dynamic_edge_compute.resample_every_completed_requests must be 5"
+        )
+    for pool_name, pool in config["device_pools"].items():
+        for device_type, template in pool["templates"].items():
+            bounds = template.get("dynamic_draft_token_rate_range_tok_s")
+            if bounds is None:
+                if enabled and int(template["count"]) > 0:
+                    raise ValueError(
+                        f"device template {pool_name}.{device_type} requires "
+                        "dynamic_draft_token_rate_range_tok_s"
+                    )
+                continue
+            valid = (
+                isinstance(bounds, list)
+                and len(bounds) == 2
+                and all(
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(float(value))
+                    and float(value) > 0.0
+                    for value in bounds
+                )
+                and float(bounds[0]) < float(bounds[1])
+            )
+            if not valid:
+                raise ValueError(
+                    f"device template {pool_name}.{device_type} dynamic rate range "
+                    "must contain two finite positive values with min < max"
+                )
 
 
 def build_devices(config: dict[str, Any], pool_name: str = "heterogeneous") -> list[Device]:
