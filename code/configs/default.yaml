@@ -23,6 +23,11 @@ edge:
   target_only_startup_ms: 0
   target_only_token_rate_tok_s: 80
 
+target_latency:
+  mode: analytical
+  profile_path: outputs/profiling/target_verification_latency_full_merged.csv
+  metric: p50_ms
+
 model_runner:
   target_model: Qwen/Qwen2.5-7B-Instruct
   target_device: "cuda:1"

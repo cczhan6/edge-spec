@@ -9,6 +9,16 @@ from src.entities import Device
 from src.tree_drafting import SUPPORTED_TREE_DRAFT_STRATEGIES
 
 REMOVED_SCENARIOS = {"balanced_drafter", "network_heterogeneous"}
+CODE_ROOT = Path(__file__).resolve().parents[1]
+TARGET_LATENCY_MODES = {"analytical", "profile"}
+TARGET_LATENCY_METRICS = {"p50_ms", "mean_ms", "p95_ms"}
+
+
+def resolve_target_latency_profile_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    return CODE_ROOT / candidate
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -58,6 +68,27 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("num_lanes must be positive")
     if float(edge["target_only_token_rate_tok_s"]) <= 0:
         raise ValueError("target_only_token_rate_tok_s must be positive")
+    target_latency = config.get("target_latency", {"mode": "analytical"})
+    mode = str(target_latency.get("mode", ""))
+    if mode not in TARGET_LATENCY_MODES:
+        raise ValueError("target_latency.mode must be analytical or profile")
+    metric = target_latency.get("metric")
+    if metric is not None and str(metric) not in TARGET_LATENCY_METRICS:
+        raise ValueError(
+            "target_latency.metric must be p50_ms, mean_ms, or p95_ms"
+        )
+    if mode == "profile":
+        profile_path = target_latency.get("profile_path")
+        if not isinstance(profile_path, str) or not profile_path.strip():
+            raise ValueError(
+                "target_latency.profile_path must be a non-empty string in profile mode"
+            )
+        resolved_profile_path = resolve_target_latency_profile_path(profile_path)
+        if not resolved_profile_path.is_file():
+            raise ValueError(
+                "target_latency.profile_path does not exist: "
+                f"{resolved_profile_path}"
+            )
     speculation = config["speculation"]
     if int(speculation["W_default"]) <= 0:
         raise ValueError("W_default must be positive")
