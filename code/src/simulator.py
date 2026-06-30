@@ -728,6 +728,23 @@ class Simulator:
     def _segment_payload_tokens(self, segment: Segment) -> int:
         return segment.draft_payload_tokens
 
+    def _verification_context_lengths(
+        self,
+        segments: Sequence[Segment],
+    ) -> tuple[int, ...]:
+        contexts: list[int] = []
+        for segment in segments:
+            request = self.requests[segment.request_id]
+            expected = len(request.prompt_ids) + segment.base_pos
+            actual = len(segment.prefix_ids)
+            if actual != expected:
+                raise RuntimeError(
+                    "verification prefix length does not match verifier KV prefix: "
+                    f"segment={segment.segment_id}, expected={expected}, actual={actual}"
+                )
+            contexts.append(actual)
+        return tuple(contexts)
+
     def _verify_latency_for_segments(self, segments: Sequence[Segment]) -> float:
         if self._is_specedge_runtime():
             return verify_latency_ms(
