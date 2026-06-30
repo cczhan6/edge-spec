@@ -210,3 +210,58 @@ class SimulatorEdgeComputeOwnershipTest(unittest.TestCase):
             [first.edge_compute.current_rate(index) for index in range(3)],
             [second.edge_compute.current_rate(index) for index in range(3)],
         )
+
+
+def dynamic_single_device_case(
+    *,
+    num_requests: int = 5,
+    output_len: int = 2,
+) -> tuple[dict, FakeModelRunner, list]:
+    config, runner, workload = small_config(
+        num_requests=num_requests,
+        output_len=output_len,
+    )
+    force_one_device(config)
+    enable_dynamic_edge(config)
+    config["simulation"]["request_arrival"] = "burst"
+    return config, runner, workload
+
+
+class RequestFinalizationTest(unittest.TestCase):
+    def assert_one_epoch_after_five(self, method: str) -> None:
+        config, runner, workload = dynamic_single_device_case()
+        simulator = Simulator(config, runner, workload, "test", method)
+        simulator.run()
+
+        state = simulator.edge_compute.state(0)
+        self.assertEqual(state.completed_requests, 5)
+        self.assertEqual(state.epoch, 1)
+        transitions = [
+            event
+            for event in simulator._trace
+            if event["event"] == "edge_compute_transition"
+        ]
+        self.assertEqual(len(transitions), 1)
+        self.assertEqual(transitions[0]["completed_requests"], 5)
+
+    def test_event_driven_completion_advances_once(self) -> None:
+        self.assert_one_epoch_after_five("target_only")
+
+    def test_dip_sd_inline_completion_uses_the_same_counter(self) -> None:
+        self.assert_one_epoch_after_five("dip_sd")
+
+    def test_finalize_request_is_idempotent(self) -> None:
+        config, runner, workload = dynamic_single_device_case(num_requests=1)
+        simulator = Simulator(config, runner, workload, "test", "target_only")
+        simulator._schedule_request_arrivals()
+        request = simulator.requests[0]
+
+        simulator._finalize_request(request, 10.0)
+        simulator._finalize_request(request, 20.0)
+
+        self.assertEqual(request.finish_time_ms, 10.0)
+        self.assertEqual(simulator.edge_compute.state(0).completed_requests, 1)
+        self.assertEqual(
+            sum(event["event"] == "request_finish" for event in simulator._trace),
+            1,
+        )

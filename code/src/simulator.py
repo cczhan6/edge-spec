@@ -458,22 +458,7 @@ class Simulator:
                             and self.model_runner.eos_token_id in request.generated_ids
                         )
                     ):
-                        request.status = "finished"
-                        request.finish_time_ms = result_arrival_ms
-                        self._trace.append(
-                            {
-                                "event": "request_finish",
-                                "method": self.spec.name,
-                                "request_id": request.request_id,
-                                "device_id": request.device_id,
-                                "finish_time_ms": result_arrival_ms,
-                            }
-                        )
-                        if self._progress_callback is not None:
-                            self._progress_callback(
-                                sum(item.status == "finished" for item in self.requests),
-                                len(self.requests),
-                            )
+                        self._finalize_request(request, result_arrival_ms)
             epoch_end_ms = max([server_available_ms, *epoch_result_arrivals], default=server_available_ms)
             server_available_ms = epoch_end_ms
             active = [
@@ -2214,8 +2199,7 @@ class Simulator:
                 [now_ms] * len(segment.emitted_ids)
             )
 
-    def _on_request_finish(self, now_ms: float, request_id: int) -> None:
-        request = self.requests[request_id]
+    def _finalize_request(self, request: Request, now_ms: float) -> None:
         if request.status == "finished":
             return
         request.status = "finished"
@@ -2225,20 +2209,45 @@ class Simulator:
             segment = self.segments[segment_id]
             if segment.status in ACTIVE_SEGMENT_STATUSES:
                 self._discard_segment(segment)
+        transition = self.edge_compute.record_request_completion(request.device_id)
+        if transition is not None:
+            self._trace.append(
+                {
+                    "event": "edge_compute_transition",
+                    "method": self.spec.name,
+                    "device_id": transition.device_id,
+                    "device_type": transition.device_type,
+                    "completed_requests": transition.completed_requests,
+                    "old_epoch": transition.old_epoch,
+                    "new_epoch": transition.new_epoch,
+                    "old_draft_token_rate_tok_s": transition.old_rate,
+                    "new_draft_token_rate_tok_s": transition.new_rate,
+                    "time_ms": now_ms,
+                }
+            )
         self._trace.append(
             {
                 "event": "request_finish",
                 "method": self.spec.name,
-                "request_id": request_id,
+                "request_id": request.request_id,
                 "device_id": request.device_id,
                 "finish_time_ms": now_ms,
             }
         )
         if self._progress_callback is not None:
-            self._progress_callback(sum(item.status == "finished" for item in self.requests), len(self.requests))
-        if self._is_server_only_runtime() and self._server_only_active_request_id == request_id:
+            self._progress_callback(
+                sum(item.status == "finished" for item in self.requests),
+                len(self.requests),
+            )
+        if (
+            self._is_server_only_runtime()
+            and self._server_only_active_request_id == request.request_id
+        ):
             self._server_only_active_request_id = None
             self._maybe_start_server_only_request(now_ms)
+
+    def _on_request_finish(self, now_ms: float, request_id: int) -> None:
+        self._finalize_request(self.requests[request_id], now_ms)
 
     def _invalidate_pending(self, request: Request) -> None:
         for segment_id in list(request.pending_segments.values()):
