@@ -51,6 +51,19 @@ class AsyncSegmentState:
     draft_ids: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True)
+class ContiguousVerifyInput:
+    prefix_ids: tuple[int, ...]
+    draft_ids: tuple[int, ...]
+    local_start: int
+    local_end: int
+    dependency_fingerprint: tuple[int, ...]
+
+    @property
+    def local_slice(self) -> slice:
+        return slice(self.local_start, self.local_end)
+
+
 @dataclass
 class AsyncRequestState:
     request_id: int
@@ -60,6 +73,36 @@ class AsyncRequestState:
     completed_results: dict[int, Any] = field(default_factory=dict)
     path_generation: int = 0
     terminal: bool = False
+
+    def build_verify_input(
+        self,
+        segment_index: int,
+        l_max_ver: int,
+    ) -> ContiguousVerifyInput | None:
+        if l_max_ver <= 0:
+            raise ValueError("l_max_ver must be positive")
+        if segment_index < self.current_segment_index:
+            raise ValueError("segment precedes the request frontier")
+        draft_ids: list[int] = []
+        local_start = 0
+        for index in range(self.current_segment_index, segment_index + 1):
+            segment = self.segments.get(index)
+            if segment is None:
+                raise ValueError(f"missing dependency segment: {index}")
+            if segment.path_generation != self.path_generation:
+                raise ValueError(f"segment has stale path generation: {index}")
+            if index == segment_index:
+                local_start = len(draft_ids)
+            draft_ids.extend(segment.draft_ids)
+        if len(draft_ids) > l_max_ver:
+            return None
+        return ContiguousVerifyInput(
+            prefix_ids=tuple(self.server_confirmed_ids),
+            draft_ids=tuple(draft_ids),
+            local_start=local_start,
+            local_end=len(draft_ids),
+            dependency_fingerprint=tuple(draft_ids[:local_start]),
+        )
 
 
 class AsyncVerificationCoordinator:
