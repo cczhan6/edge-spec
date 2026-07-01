@@ -9,6 +9,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from src.entities import Request
+from src.events import EventType
+from src.model_runner import ModelRunner
+from src.simulator import Simulator
 from src.workload import WorkloadItem
 
 
@@ -33,6 +37,57 @@ class SharedRequest:
             category=self.category,
             category_group=self.category_group,
         )
+
+
+class SharedTraceSimulator(Simulator):
+    def __init__(
+        self,
+        config: dict[str, Any],
+        model_runner: ModelRunner,
+        shared_requests: Sequence[SharedRequest],
+        scenario: str,
+        method: str,
+        **kwargs: Any,
+    ) -> None:
+        self._shared_requests = list(shared_requests)
+        super().__init__(
+            config,
+            model_runner,
+            [row.workload_item() for row in self._shared_requests],
+            scenario,
+            method,
+            **kwargs,
+        )
+
+    def _schedule_request_arrivals(self) -> None:
+        if self.requests:
+            raise RuntimeError("shared requests were already scheduled")
+        for row in self._shared_requests:
+            prompt_ids = self.model_runner.encode_prompt(row.prompt)
+            if len(prompt_ids) != row.prompt_token_count:
+                raise ValueError(
+                    f"shared prompt token count differs for request {row.request_id}"
+                )
+            request = Request(
+                request_id=row.request_id,
+                device_id=row.device_id,
+                output_len=row.output_len,
+                arrival_time_ms=row.arrival_time_ms,
+                decode_ready_time_ms=row.decode_ready_time_ms,
+                prompt_id=row.prompt_id,
+                category=row.category,
+                category_group=row.category_group,
+                prompt=row.prompt,
+                prompt_token_count=len(prompt_ids),
+                prompt_ids=prompt_ids,
+            )
+            self.requests.append(request)
+            self.device_runtimes[row.device_id].assigned_requests += 1
+            self._schedule(
+                row.arrival_time_ms,
+                EventType.REQUEST_ARRIVE,
+                row.request_id,
+            )
 
 
 def materialize_shared_trace(

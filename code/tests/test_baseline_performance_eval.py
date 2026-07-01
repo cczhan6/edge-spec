@@ -4,10 +4,12 @@ import csv
 import math
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.run_baseline_performance_eval import (
+    SharedTraceSimulator,
     load_shared_trace,
     materialize_shared_trace,
 )
@@ -20,6 +22,7 @@ from scripts.summarize_baseline_performance_eval import (
 )
 from src.config import load_config
 from src.workload import WorkloadItem
+from tests.common import small_config
 
 
 def test_dynamic_heterogeneous_configuration_contract() -> None:
@@ -147,3 +150,54 @@ def test_existing_shared_trace_rejects_different_content(tmp_path: Path) -> None
     ]
     with pytest.raises(ValueError, match="existing shared trace differs"):
         materialize_shared_trace(config, changed, path)
+
+
+def test_all_methods_consume_shared_arrivals_without_resampling(
+    tmp_path: Path,
+) -> None:
+    config, runner, _ = small_config(num_requests=4, output_len=8)
+    config["simulation"].update(
+        seed=4,
+        request_arrival="poisson",
+        poisson_rate_per_s=20,
+    )
+    path = tmp_path / "shared.jsonl"
+    materialize_shared_trace(config, _workload(), path)
+    shared = load_shared_trace(path, config)
+
+    observed = []
+    for method in (
+        "target_only",
+        "server_only_linear",
+        "specedge_linear",
+        "dip_sd",
+    ):
+        simulator = SharedTraceSimulator(
+            config,
+            runner,
+            shared,
+            "dynamic_heterogeneous",
+            method,
+        )
+        simulator._rng = SimpleNamespace(
+            expovariate=lambda *_: (_ for _ in ()).throw(
+                AssertionError("resampled arrival")
+            ),
+            choice=lambda *_: (_ for _ in ()).throw(
+                AssertionError("resampled output length")
+            ),
+        )
+        simulator._schedule_request_arrivals()
+        observed.append(
+            [
+                (
+                    request.request_id,
+                    request.arrival_time_ms,
+                    request.output_len,
+                    request.device_id,
+                )
+                for request in simulator.requests
+            ]
+        )
+
+    assert all(rows == observed[0] for rows in observed[1:])
