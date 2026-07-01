@@ -24,8 +24,12 @@ fixed schema ever requires a TTFT column, it must be empty, accompanied by
 
 ## Existing Interfaces Reused
 
-The evaluation reuses `scripts.run_all` as the experiment runner and requests
-trace bundles for correctness validation. The actual configuration fields are:
+The evaluation reuses the model-runner, simulator, metric summarization, and
+trace-bundle writing path already composed by `scripts.run_all`. A thin
+evaluation adapter is necessary because the general CLI has no input for a
+materialized arrival trace; the adapter supplies that trace while retaining
+the existing simulation and output contracts. The actual configuration fields
+are:
 
 ```yaml
 dynamic_edge_compute:
@@ -43,10 +47,11 @@ The design intentionally does not introduce the aliases
 uses the existing `device_pools.heterogeneous.templates.*.block_probability`
 field.
 
-`scripts.run_all` already produces request latency percentiles, TPOT/TBT,
-makespan, goodput, acceptance rate, and selected gamma. Trace bundles provide
-request completion state and committed token sequences, which are required to
-derive `committed_tokens` and `success` without changing production metrics.
+The existing runner path already produces request latency percentiles,
+TPOT/TBT, makespan, goodput, acceptance rate, and selected gamma. Trace bundles
+provide request completion state and committed token sequences, which are
+required to derive `committed_tokens` and `success` without changing
+production metrics.
 
 ## Evaluation Configuration
 
@@ -63,11 +68,14 @@ Add a scenario override for `dynamic_heterogeneous` on top of
 - target verification profile mode with `p50_ms`;
 - 80 total requests and the existing Poisson arrival process.
 
-The orchestration script runs seeds `0, 1, 2, 3, 4`. For a given seed, it loads
-the workload once through the existing runner contract and runs all six methods
-against the same resolved configuration. Consequently the dataset sample,
-arrival sequence, request-to-device mapping, device identities and initial
-rates, network fields, and target profile are common within the seed.
+The orchestration script runs seeds `0, 1, 2, 3, 4`. For each seed it first
+materializes exactly one immutable workload/arrival trace. That trace contains
+the selected workload order, requested output lengths, arrival/decode-ready
+times, and input request-to-device mapping. All six methods read this same
+file; no method independently samples the dataset, output-length choices, or
+Poisson arrival process. Consequently the dataset sample, arrival sequence,
+input request-to-device mapping, device identities and initial rates, network
+fields, and target profile are common within the seed.
 
 The script records a resolved per-seed configuration under the new evaluation
 output root before running. These generated files are provenance artifacts,
@@ -90,11 +98,15 @@ A new run script:
 1. creates a dedicated `outputs/baseline_performance_eval/` tree;
 2. resolves the scenario once per seed and writes the seed into that resolved
    configuration;
-3. audits the resolved configuration before execution;
-4. invokes the existing `scripts.run_all` entry point for all six methods with
-   trace bundle output enabled;
-5. preserves per-seed stdout and return status; and
-6. invokes the summary/validation script after the requested runs finish.
+3. materializes and validates the seed's unique shared workload/arrival trace;
+4. audits the resolved configuration before execution;
+5. pre-creates the complete 30-row run-status matrix;
+6. invokes the existing simulation and trace-writing runner path once for each
+   method, supplying the shared trace instead of allowing arrival resampling;
+7. preserves per-run stdout and return status, records failures, and continues
+   with all remaining cells; and
+8. invokes the summary/validation script after the requested runs finish,
+   returning nonzero after all cells have been attempted if any cell failed.
 
 No output is written beneath `outputs/baseline_trace/`.
 
@@ -122,12 +134,24 @@ method.
 TPOT and TBT retain the definitions emitted by the current runner. This
 evaluation does not redefine them or infer a prefill/first-token metric.
 
-For every numeric metric in `runs.csv`, `summary.csv` contains `<metric>_mean`
-and `<metric>_std`, grouped by method across the five seeds. Standard deviation
-uses the sample definition. It also records `num_runs`, `successful_runs`,
-`metric_scope`, and `success`. Aggregated metrics are emitted only when all five
-runs for the method pass validation; otherwise they remain empty so failed
-runs cannot silently bias the reported result.
+`runs.csv` is initialized with all 30 expected `(seed, method)` rows before any
+simulation starts. A process failure or missing trace updates its existing row
+to `success=false` with a concrete `failure_reason`; rows are never omitted.
+
+`summary.csv` computes `<metric>_mean` and `<metric>_std`, grouped by method
+across the five seeds, only for this explicit performance metric list:
+
+- `avg_latency_ms`, `p50_latency_ms`, `p95_latency_ms`, `p99_latency_ms`;
+- `avg_tpot_ms`, `avg_tbt_ms`;
+- `makespan_ms`, `goodput_tok_s`;
+- `avg_acceptance_rate`, `avg_selected_gamma`.
+
+Standard deviation uses the sample definition. `seed`, `success`,
+`num_requests`, and `committed_tokens` are integrity fields and are never
+aggregated. The summary also records `num_runs`, `successful_runs`,
+`metric_scope`, and `success`. Aggregated performance metrics are emitted only
+when all five runs for the method pass validation; otherwise they remain empty
+so failed runs cannot silently bias the reported result.
 
 ## Correctness Gates
 
@@ -135,9 +159,12 @@ For each seed, validation requires:
 
 1. exactly the six canonical methods and exactly 80 finished requests per
    method;
-2. identical request IDs, prompt IDs, requested output lengths, arrival times,
-   decode-ready times, and device assignments across methods;
-3. one common resolved device configuration and target profile configuration;
+2. every method consumes the seed's single materialized workload/arrival trace,
+   with identical request IDs, prompt IDs, requested output lengths, arrival
+   times, and decode-ready times;
+3. the shared input trace contains one request-to-device mapping, and methods
+   use one common resolved device configuration, epoch-zero rate vector,
+   deterministic epoch-to-rate mapping, and target profile configuration;
 4. dynamic compute enabled, update interval equal to five, and blocking
    probability equal to `0.2` for every populated heterogeneous template;
 5. profile mode using the expected merged CSV and `metric=p50_ms`;
@@ -147,6 +174,17 @@ For each seed, validation requires:
    token totals;
 8. all requests finished with no pending speculative state; and
 9. successful process return status and complete trace files.
+
+Device assignment consistency is checked against the mapping in the shared
+input trace. A missing or non-applicable `device_id` in `target_only` or a
+server-only output trace is not a failure, and the evaluation must not create
+fake edge events to make those methods appear device-backed.
+
+Only immutable resource inputs are cross-method invariants. Different methods
+may complete requests in different orders, so dynamic edge-compute transition
+times and network-blocking event outcomes are not required to match event by
+event. Their common seed, device configuration, epoch-zero rates, deterministic
+epoch-to-rate function, and blocking probability are still validated.
 
 A failed gate sets `success=false` and a concrete `failure_reason` in
 `runs.csv`. The affected method is also unsuccessful in `summary.csv`, and the
@@ -159,11 +197,14 @@ runs are never dropped from the integrity result.
 outputs/baseline_performance_eval/
   _configs/
     dynamic_heterogeneous_seed_<seed>.yaml
+  _workloads/
+    dynamic_heterogeneous_seed_<seed>.jsonl
   dynamic_heterogeneous/
     <seed>/
-      stdout.log
       _raw/
       <method>/
+        stdout.log
+        run_status.json
         metrics.csv
         request_trace.csv
         event_trace.csv
