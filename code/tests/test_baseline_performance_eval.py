@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import csv
 import math
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from scripts.run_baseline_performance_eval import (
+    load_shared_trace,
+    materialize_shared_trace,
+)
 from scripts.summarize_baseline_performance_eval import (
     METHODS,
     PERFORMANCE_FIELDS,
@@ -12,6 +19,7 @@ from scripts.summarize_baseline_performance_eval import (
     initialize_runs_csv,
 )
 from src.config import load_config
+from src.workload import WorkloadItem
 
 
 def test_dynamic_heterogeneous_configuration_contract() -> None:
@@ -82,3 +90,60 @@ def test_aggregate_rows_uses_sample_stats_only_for_performance_fields() -> None:
     assert "success_mean" not in summary
     assert "num_requests_mean" not in summary
     assert "committed_tokens_mean" not in summary
+
+
+def _workload(count: int = 4) -> list[WorkloadItem]:
+    rows = []
+    for index in range(count):
+        prompt = f"prompt text {index}"
+        rows.append(
+            WorkloadItem(
+                prompt_id=f"prompt-{index}",
+                prompt=prompt,
+                prompt_token_count=len(prompt.encode("utf-8")),
+                category="qa",
+                category_group="QA",
+            )
+        )
+    return rows
+
+
+def test_materialized_trace_is_reused_byte_for_byte(tmp_path: Path) -> None:
+    config = load_config("configs/default.yaml")
+    config["simulation"].update(
+        seed=3,
+        num_requests=4,
+        num_devices=4,
+        output_len_choices=[8, 16],
+        request_arrival="poisson",
+        poisson_rate_per_s=20,
+    )
+    path = tmp_path / "seed_3.jsonl"
+
+    first_hash = materialize_shared_trace(config, _workload(), path)
+    first_bytes = path.read_bytes()
+    second_hash = materialize_shared_trace(config, _workload(), path)
+    rows = load_shared_trace(path, config)
+
+    assert second_hash == first_hash
+    assert path.read_bytes() == first_bytes
+    assert [row.request_id for row in rows] == [0, 1, 2, 3]
+    assert [row.device_id for row in rows] == [0, 1, 2, 3]
+    assert rows[0].arrival_time_ms == 0.0
+    assert [row.arrival_time_ms for row in rows] == sorted(
+        row.arrival_time_ms for row in rows
+    )
+
+
+def test_existing_shared_trace_rejects_different_content(tmp_path: Path) -> None:
+    config = load_config("configs/default.yaml")
+    config["simulation"].update(seed=0, num_requests=4, num_devices=4)
+    path = tmp_path / "seed_0.jsonl"
+    materialize_shared_trace(config, _workload(), path)
+
+    changed = [
+        replace(item, prompt="changed") if index == 0 else item
+        for index, item in enumerate(_workload())
+    ]
+    with pytest.raises(ValueError, match="existing shared trace differs"):
+        materialize_shared_trace(config, changed, path)
