@@ -1,0 +1,22 @@
+simulation:
+  num_requests: 80
+  request_arrival: poisson
+
+dynamic_edge_compute:
+  enabled: true
+  resample_every_completed_requests: 5
+
+target_latency:
+  mode: profile
+  profile_path: outputs/profiling/target_verification_latency_full_merged.csv
+  metric: p50_ms
+
+device_pools:
+  heterogeneous:
+    templates:
+      low_end:
+        block_probability: 0.2
+      mid_end:
+        block_probability: 0.2
+      high_end:
+        block_probability: 0.2
