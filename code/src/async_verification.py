@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Iterable
 
@@ -36,6 +36,7 @@ class VerificationJob:
 class VerificationChannelState:
     channel_id: int
     active_job_id: int | None = None
+    active_start_ms: float | None = None
     busy_until_ms: float = 0.0
     processed_jobs: int = 0
     total_busy_time_ms: float = 0.0
@@ -117,3 +118,83 @@ class AsyncVerificationCoordinator:
             if job_id not in selected_ids
         ]
         return selected
+
+    def dispatch_one(
+        self,
+        now_ms: float,
+        duration_ms: float,
+    ) -> VerificationJob | None:
+        if duration_ms < 0:
+            raise ValueError("verification duration must be non-negative")
+        channel = next(
+            (
+                item
+                for item in self.channels
+                if item.active_job_id is None
+            ),
+            None,
+        )
+        if channel is None:
+            return None
+        selected = self.pop_waiting(1)
+        if not selected:
+            return None
+        job = replace(selected[0], status=JobStatus.VERIFYING)
+        self._jobs[job.job_id] = job
+        channel.active_job_id = job.job_id
+        channel.active_start_ms = now_ms
+        channel.busy_until_ms = now_ms + duration_ms
+        return job
+
+    def dispatch_all(
+        self,
+        now_ms: float,
+        duration_ms: float,
+    ) -> list[VerificationJob]:
+        dispatched: list[VerificationJob] = []
+        while True:
+            job = self.dispatch_one(now_ms, duration_ms)
+            if job is None:
+                return dispatched
+            dispatched.append(job)
+
+    def invalidate_active_job(self, job_id: int) -> None:
+        if not any(
+            channel.active_job_id == job_id
+            for channel in self.channels
+        ):
+            raise ValueError(f"verification job is not active: {job_id}")
+        self._jobs[job_id] = replace(
+            self._jobs[job_id],
+            status=JobStatus.INVALID,
+        )
+
+    def complete_channel(
+        self,
+        channel_id: int,
+        job_id: int,
+        now_ms: float,
+    ) -> VerificationJob:
+        channel = self.channels[channel_id]
+        if channel.active_job_id != job_id:
+            raise ValueError(
+                "verification completion does not match active channel"
+            )
+        job = self._jobs[job_id]
+        if job.status is not JobStatus.INVALID:
+            job = replace(job, status=JobStatus.COMPLETED)
+            self._jobs[job_id] = job
+        start_ms = (
+            now_ms
+            if channel.active_start_ms is None
+            else channel.active_start_ms
+        )
+        channel.active_job_id = None
+        channel.active_start_ms = None
+        channel.busy_until_ms = now_ms
+        channel.processed_jobs += 1
+        channel.total_busy_time_ms += now_ms - start_ms
+        return job
+
+    def job(self, job_id: int) -> VerificationJob:
+        return self._jobs[job_id]
