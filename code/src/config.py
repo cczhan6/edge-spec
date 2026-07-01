@@ -226,6 +226,7 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"device_pools.{pool_name}.templates must not be empty")
         count = 0
         for template_name, template in pool["templates"].items():
+            _validate_device_network_template(pool_name, template_name, template)
             count += int(template["count"])
             drafter = str(template["drafter_profile"])
             if drafter not in config["drafter_profiles"]:
@@ -234,12 +235,46 @@ def validate_config(config: dict[str, Any]) -> None:
                 )
             if float(template["draft_token_rate_tok_s"]) <= 0:
                 raise ValueError("draft_token_rate_tok_s must be positive")
-            if float(template["uplink_mbps"]) <= 0 or float(template["downlink_mbps"]) <= 0:
-                raise ValueError("device bandwidth must be positive")
         if count != int(simulation["num_devices"]):
             raise ValueError(
                 f"device pool {pool_name} defines {count} devices, "
                 f"expected simulation.num_devices={simulation['num_devices']}"
+            )
+
+
+def _is_finite_real(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _validate_device_network_template(
+    pool_name: str,
+    template_name: str,
+    template: dict[str, Any],
+) -> None:
+    prefix = f"device_pools.{pool_name}.templates.{template_name}"
+    probability = template.get("block_probability", 1.0)
+    if (
+        not _is_finite_real(probability)
+        or not 0.0 <= float(probability) <= 1.0
+    ):
+        raise ValueError(
+            f"{prefix}.block_probability must be a finite number in [0, 1]"
+        )
+    for field in ("rtt_ms", "jitter_ms"):
+        value = template.get(field, 0.0)
+        if not _is_finite_real(value) or float(value) < 0.0:
+            raise ValueError(
+                f"{prefix}.{field} must be a finite non-negative number"
+            )
+    for field in ("uplink_mbps", "downlink_mbps"):
+        value = template[field]
+        if not _is_finite_real(value) or float(value) <= 0.0:
+            raise ValueError(
+                f"{prefix}.{field} must be a finite positive number"
             )
 
 

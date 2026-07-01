@@ -7,6 +7,62 @@ from src.tree_drafting import build_tree_draft_strategy
 
 
 class ConfigTest(unittest.TestCase):
+    def test_block_probability_accepts_closed_unit_interval(self) -> None:
+        for value in (0, 0.25, 1):
+            with self.subTest(value=value):
+                config = load_config("configs/default.yaml")
+                config["device_pools"]["heterogeneous"]["templates"]["low_end"][
+                    "block_probability"
+                ] = value
+                validate_config(config)
+
+    def test_block_probability_rejects_invalid_values_with_template_path(self) -> None:
+        invalid_values = (
+            True,
+            "0.5",
+            -0.01,
+            1.01,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                config = load_config("configs/default.yaml")
+                config["device_pools"]["heterogeneous"]["templates"]["low_end"][
+                    "block_probability"
+                ] = value
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"device_pools\.heterogeneous\.templates\.low_end\."
+                    r"block_probability must be a finite number in \[0, 1\]",
+                ):
+                    validate_config(config)
+
+    def test_invalid_network_bounds_are_rejected_even_for_zero_count_template(self) -> None:
+        invalid_fields = (
+            ("jitter_ms", -1.0, "must be a finite non-negative number"),
+            ("jitter_ms", float("nan"), "must be a finite non-negative number"),
+            ("rtt_ms", -1.0, "must be a finite non-negative number"),
+            ("rtt_ms", float("inf"), "must be a finite non-negative number"),
+            ("uplink_mbps", float("nan"), "must be a finite positive number"),
+            ("downlink_mbps", 0.0, "must be a finite positive number"),
+        )
+        for field, value, message in invalid_fields:
+            with self.subTest(field=field, value=value):
+                config = load_config("configs/default.yaml")
+                template = config["device_pools"]["heterogeneous"]["templates"][
+                    "high_end"
+                ]
+                template["count"] = 0
+                template[field] = value
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"device_pools\.heterogeneous\.templates\.high_end\."
+                    rf"{field} {message}",
+                ):
+                    validate_config(config)
+
     def test_build_devices_defaults_missing_block_probability_to_one(self) -> None:
         config = load_config("configs/default.yaml")
         for pool in config["device_pools"].values():
