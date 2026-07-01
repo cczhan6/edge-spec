@@ -5,6 +5,8 @@ from typing import Any
 
 from src.entities import Device
 
+NETWORK_BLOCK_DOMAIN = "network-block-v1"
+
 
 def dssd_transmission_delay_ms(
     payload_bytes: int,
@@ -23,6 +25,19 @@ def deterministic_jitter_ms(seed: int, device: Device, direction: str, key: Any)
     digest_key = f"{seed}:{device.device_id}:{direction}:{key}".encode()
     ratio = int.from_bytes(hashlib.sha256(digest_key).digest()[:8], "big") / 2**64
     return ratio * device.jitter_ms
+
+
+def deterministic_network_blocked(
+    seed: int,
+    device: Device,
+    direction: str,
+    key: Any,
+) -> bool:
+    digest_key = (
+        f"{NETWORK_BLOCK_DOMAIN}:{seed}:{device.device_id}:{direction}:{key}"
+    ).encode()
+    ratio = int.from_bytes(hashlib.sha256(digest_key).digest()[:8], "big") / 2**64
+    return ratio < device.block_probability
 
 
 def network_delay_ms(
