@@ -115,6 +115,97 @@ class CommunicationTest(unittest.TestCase):
             hashlib.sha256(wait_material).digest()[:8],
         )
 
+    def test_probability_zero_always_omits_extra_jitter(self) -> None:
+        device = make_device(jitter_ms=25.0, block_probability=0.0)
+        for direction, payload_bytes, bandwidth in (
+            ("uplink", 1000, device.uplink_mbps),
+            ("downlink", 1000, device.downlink_mbps),
+        ):
+            with self.subTest(direction=direction):
+                expected = dssd_transmission_delay_ms(
+                    payload_bytes,
+                    device.rtt_ms,
+                    bandwidth,
+                )
+                self.assertEqual(
+                    network_delay_ms(7, device, direction, "segment-1", payload_bytes),
+                    expected,
+                )
+
+    def test_probability_one_is_exactly_legacy_network_delay(self) -> None:
+        device = make_device(jitter_ms=25.0, block_probability=1.0)
+        cases = (
+            (1, "uplink", "x", 1000),
+            (7, "downlink", "segment-1", 64),
+            (99, "uplink", 17, 0),
+        )
+        for seed, direction, key, payload_bytes in cases:
+            with self.subTest(
+                seed=seed,
+                direction=direction,
+                key=key,
+                payload_bytes=payload_bytes,
+            ):
+                bandwidth = (
+                    device.uplink_mbps
+                    if direction == "uplink"
+                    else device.downlink_mbps
+                )
+                legacy = dssd_transmission_delay_ms(
+                    payload_bytes,
+                    device.rtt_ms,
+                    bandwidth,
+                ) + deterministic_jitter_ms(seed, device, direction, key)
+                self.assertEqual(
+                    network_delay_ms(seed, device, direction, key, payload_bytes),
+                    legacy,
+                )
+
+    def test_intermediate_probability_uses_legacy_wait_only_when_blocked(self) -> None:
+        device = make_device(jitter_ms=25.0, block_probability=0.5)
+        payload_bytes = 1000
+        base = dssd_transmission_delay_ms(
+            payload_bytes,
+            device.rtt_ms,
+            device.uplink_mbps,
+        )
+
+        blocked = network_delay_ms(
+            7, device, "uplink", "segment-6", payload_bytes
+        )
+        unblocked = network_delay_ms(
+            7, device, "uplink", "segment-2", payload_bytes
+        )
+
+        self.assertEqual(
+            blocked,
+            base + deterministic_jitter_ms(7, device, "uplink", "segment-6"),
+        )
+        self.assertEqual(unblocked, base)
+        self.assertGreaterEqual(blocked - base, 0.0)
+        self.assertLessEqual(blocked - base, device.jitter_ms)
+        self.assertLess(
+            reference_block_ratio(7, 0, "uplink", "segment-6"),
+            0.5,
+        )
+        self.assertGreater(
+            deterministic_jitter_ms(7, device, "uplink", "segment-6")
+            / device.jitter_ms,
+            0.5,
+        )
+
+    def test_direct_device_network_validation_rejects_invalid_values(self) -> None:
+        invalid_devices = (
+            make_device(block_probability=-0.1),
+            make_device(block_probability=1.1),
+            make_device(block_probability=float("nan")),
+            make_device(jitter_ms=-1.0),
+        )
+        for device in invalid_devices:
+            with self.subTest(device=device):
+                with self.assertRaises(ValueError):
+                    network_delay_ms(7, device, "uplink", "x", 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

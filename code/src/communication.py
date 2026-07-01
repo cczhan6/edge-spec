@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Any
 
 from src.entities import Device
@@ -40,6 +41,27 @@ def deterministic_network_blocked(
     return ratio < device.block_probability
 
 
+def _validate_device_network(device: Device) -> None:
+    probability = device.block_probability
+    if (
+        isinstance(probability, bool)
+        or not isinstance(probability, (int, float))
+        or not math.isfinite(float(probability))
+        or not 0.0 <= float(probability) <= 1.0
+    ):
+        raise ValueError("block_probability must be a finite number in [0, 1]")
+    if not math.isfinite(device.rtt_ms) or device.rtt_ms < 0.0:
+        raise ValueError("rtt_ms must be finite and non-negative")
+    if not math.isfinite(device.jitter_ms) or device.jitter_ms < 0.0:
+        raise ValueError("jitter_ms must be finite and non-negative")
+    for name, value in (
+        ("uplink_mbps", device.uplink_mbps),
+        ("downlink_mbps", device.downlink_mbps),
+    ):
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive")
+
+
 def network_delay_ms(
     seed: int,
     device: Device,
@@ -49,11 +71,15 @@ def network_delay_ms(
 ) -> float:
     if direction not in {"uplink", "downlink"}:
         raise ValueError(f"unsupported direction: {direction}")
+    _validate_device_network(device)
     bandwidth_mbps = (
         device.uplink_mbps if direction == "uplink" else device.downlink_mbps
     )
-    return dssd_transmission_delay_ms(
+    base_delay_ms = dssd_transmission_delay_ms(
         payload_bytes,
         device.rtt_ms,
         bandwidth_mbps,
-    ) + deterministic_jitter_ms(seed, device, direction, key)
+    )
+    if not deterministic_network_blocked(seed, device, direction, key):
+        return base_delay_ms
+    return base_delay_ms + deterministic_jitter_ms(seed, device, direction, key)
