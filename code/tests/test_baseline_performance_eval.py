@@ -10,8 +10,10 @@ import pytest
 
 from scripts.run_baseline_performance_eval import (
     SharedTraceSimulator,
+    build_resource_fingerprint,
     load_shared_trace,
     materialize_shared_trace,
+    run_matrix_cells,
 )
 from scripts.summarize_baseline_performance_eval import (
     METHODS,
@@ -201,3 +203,47 @@ def test_all_methods_consume_shared_arrivals_without_resampling(
         )
 
     assert all(rows == observed[0] for rows in observed[1:])
+
+
+def test_run_matrix_cells_continues_after_process_failure(tmp_path: Path) -> None:
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(tuple(command))
+        return SimpleNamespace(returncode=7 if len(calls) == 2 else 0)
+
+    initialize_runs_csv(tmp_path)
+    statuses = run_matrix_cells(
+        root=tmp_path,
+        seeds=SEEDS,
+        methods=METHODS,
+        command_for=lambda seed, method: ["worker", str(seed), method],
+        run_process=fake_run,
+    )
+
+    assert len(calls) == 30
+    assert len(statuses) == 30
+    assert statuses[1]["success"] is False
+    assert "return code 7" in statuses[1]["failure_reason"]
+
+
+def test_resource_fingerprint_ignores_runtime_event_order() -> None:
+    config = load_config("configs/default.yaml", "dynamic_heterogeneous")
+    config["simulation"]["seed"] = 2
+
+    first = build_resource_fingerprint(config)
+    second = build_resource_fingerprint(config)
+
+    assert first == second
+    assert len(first["epoch0_rates"]) == 8
+    assert first["dynamic_edge_compute"] == {
+        "enabled": True,
+        "resample_every_completed_requests": 5,
+    }
+    assert first["block_probabilities"] == {
+        "low_end": 0.2,
+        "mid_end": 0.2,
+        "high_end": 0.2,
+    }
+    assert "transition_times" not in first
+    assert "network_events" not in first
