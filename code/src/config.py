@@ -103,6 +103,21 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("gamma_candidates must contain positive integers")
     if int(speculation["gamma_fixed"]) <= 0:
         raise ValueError("gamma_fixed must be positive")
+    async_speculative = config["async_speculative"]
+    if str(async_speculative["mode"]) != "fixed":
+        raise ValueError("async_speculative.mode must be fixed")
+    if int(async_speculative["num_channels"]) <= 0:
+        raise ValueError("async_speculative.num_channels must be positive")
+    if int(async_speculative["gamma_fixed"]) <= 0:
+        raise ValueError("async_speculative.gamma_fixed must be positive")
+    if int(async_speculative["lookahead_depth_fixed"]) <= 0:
+        raise ValueError(
+            "async_speculative.lookahead_depth_fixed must be positive"
+        )
+    if int(async_speculative["l_max_ver"]) <= 0:
+        raise ValueError("async_speculative.l_max_ver must be positive")
+    if int(async_speculative["l_max_ver"]) < int(async_speculative["gamma_fixed"]):
+        raise ValueError("async_speculative.l_max_ver must be >= gamma_fixed")
     specedge = config.get("specedge", {})
     if specedge:
         for key in (

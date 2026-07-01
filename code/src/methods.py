@@ -12,6 +12,7 @@ SUPPORTED_METHODS = (
     "specedge_linear",
     "specedge_tree",
     "dip_sd",
+    "async_speculative",
     "sync_batch_sd",
     "SpecEdge",
     "server_only",
@@ -66,6 +67,17 @@ def get_method_spec(name: str, config: dict[str, Any]) -> MethodSpec:
         )
         name = canonical
     num_lanes = int(config["edge"]["num_lanes"])
+    if name == "async_speculative":
+        return MethodSpec(
+            name,
+            "async_speculative",
+            "heterogeneous",
+            0,
+            int(config["async_speculative"]["num_channels"]),
+            False,
+            "global_priority",
+            "generation",
+        )
     if name == "target_only":
         return MethodSpec(name, "target_only", "heterogeneous", 0, 0, False, "none", "none")
     if name == "server_only_linear":

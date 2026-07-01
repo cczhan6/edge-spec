@@ -136,6 +136,13 @@ speculation:
   gamma_fixed: 4
   acceptance_window_rounds: 8
 
+async_speculative:
+  mode: fixed
+  num_channels: 4
+  gamma_fixed: 4
+  lookahead_depth_fixed: 2
+  l_max_ver: 16
+
 network:
   packet_token_bytes: 4
   packet_header_bytes: 128
