@@ -29,6 +29,7 @@ class Device:
     downlink_mbps: float
     rtt_ms: float
     jitter_ms: float
+    block_probability: float = 1.0
 
 
 @dataclass

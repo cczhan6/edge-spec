@@ -303,6 +303,7 @@ def build_devices(config: dict[str, Any], pool_name: str = "heterogeneous") -> l
                     downlink_mbps=float(template["downlink_mbps"]),
                     rtt_ms=float(template["rtt_ms"]),
                     jitter_ms=float(template.get("jitter_ms", 0.0)),
+                    block_probability=float(template.get("block_probability", 1.0)),
                 )
             )
     return devices

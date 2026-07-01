@@ -2,11 +2,42 @@ from __future__ import annotations
 
 import unittest
 
-from src.config import load_config, validate_config
+from src.config import build_devices, load_config, validate_config
 from src.tree_drafting import build_tree_draft_strategy
 
 
 class ConfigTest(unittest.TestCase):
+    def test_build_devices_defaults_missing_block_probability_to_one(self) -> None:
+        config = load_config("configs/default.yaml")
+        for pool in config["device_pools"].values():
+            for template in pool["templates"].values():
+                template.pop("block_probability", None)
+
+        for pool_name in ("heterogeneous", "medium_only"):
+            with self.subTest(pool_name=pool_name):
+                devices = build_devices(config, pool_name)
+                self.assertTrue(devices)
+                self.assertTrue(
+                    all(device.block_probability == 1.0 for device in devices)
+                )
+
+    def test_build_devices_propagates_template_block_probability(self) -> None:
+        config = load_config("configs/default.yaml")
+        templates = config["device_pools"]["heterogeneous"]["templates"]
+        templates["low_end"]["block_probability"] = 0.1
+        templates["mid_end"]["block_probability"] = 0.4
+        templates["high_end"]["block_probability"] = 0.9
+
+        devices = build_devices(config, "heterogeneous")
+
+        expected = {"low_end": 0.1, "mid_end": 0.4, "high_end": 0.9}
+        self.assertTrue(devices)
+        for device in devices:
+            self.assertEqual(
+                device.block_probability,
+                expected[device.device_type],
+            )
+
     def test_default_device_and_verify_rates_match_strong_heterogeneous_profile(self) -> None:
         config = load_config("configs/default.yaml")
         templates = config["device_pools"]["heterogeneous"]["templates"]
