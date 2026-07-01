@@ -7,6 +7,19 @@ from src.tree_drafting import build_tree_draft_strategy
 
 
 class ConfigTest(unittest.TestCase):
+    def test_default_and_scenario_device_templates_declare_probability_one(self) -> None:
+        for scenario in (None, "homogeneous", "combined_strong_heterogeneous"):
+            with self.subTest(scenario=scenario):
+                config = load_config("configs/default.yaml", scenario)
+                for pool_name, pool in config["device_pools"].items():
+                    for template_name, template in pool["templates"].items():
+                        self.assertIn(
+                            "block_probability",
+                            template,
+                            (scenario, pool_name, template_name),
+                        )
+                        self.assertEqual(template["block_probability"], 1.0)
+
     def test_block_probability_accepts_closed_unit_interval(self) -> None:
         for value in (0, 0.25, 1):
             with self.subTest(value=value):

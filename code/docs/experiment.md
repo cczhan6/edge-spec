@@ -221,8 +221,17 @@ target_only_ms      = target_only_startup_ms + 1000 * output_tokens / target_onl
 
 ```text
 payload_bytes = packet_header_bytes + token_count * packet_token_bytes
-delay_ms = RTT_ms / 2 + payload_bytes * 8 / (bandwidth_mbps * 1000) + deterministic_jitter_ms
+u_block = deterministic_ratio("network-block-v1", seed, device_id, direction, event_key)
+blocked = u_block < block_probability
+blocking_wait_ms = deterministic_legacy_jitter_ms if blocked else 0
+delay_ms = RTT_ms / 2
+         + payload_bytes * 8 / (bandwidth_mbps * 1000)
+         + blocking_wait_ms
 ```
+
+`block_probability` 是设备级参数，默认值为 `1.0`，因此默认配置继续使用原有 jitter
+哈希与等待时长，trace 时序精确兼容。正式动态网络场景通过将该值设为小于 `1.0`
+来启用非必然阻塞行为。
 
 非 target-only 方法的首个 segment 上行 `token_count` 只包含 segment payload token；
 后续 segment 同样只包含 draft/tree payload token。Prompt token 不作为通信 payload

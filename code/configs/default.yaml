@@ -91,6 +91,7 @@ device_pools:
         downlink_mbps: 30
         rtt_ms: 90
         jitter_ms: 25
+        block_probability: 1.0
       mid_end:
         count: 3
         drafter_profile: medium
@@ -101,6 +102,7 @@ device_pools:
         downlink_mbps: 100
         rtt_ms: 40
         jitter_ms: 10
+        block_probability: 1.0
       high_end:
         count: 2
         drafter_profile: large
@@ -111,6 +113,7 @@ device_pools:
         downlink_mbps: 300
         rtt_ms: 10
         jitter_ms: 2
+        block_probability: 1.0
   medium_only:
     templates:
       medium:
@@ -123,6 +126,7 @@ device_pools:
         downlink_mbps: 100
         rtt_ms: 40
         jitter_ms: 10
+        block_probability: 1.0
 
 speculation:
   W_default: 2
