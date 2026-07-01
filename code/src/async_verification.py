@@ -25,6 +25,7 @@ class VerificationJob:
     verify_prefix_ids: tuple[int, ...]
     local_start: int
     local_end: int
+    dependency_fingerprint: tuple[int, ...] = ()
     status: JobStatus = JobStatus.WAITING
 
     @property
@@ -62,6 +63,20 @@ class ContiguousVerifyInput:
     @property
     def local_slice(self) -> slice:
         return slice(self.local_start, self.local_end)
+
+
+@dataclass(frozen=True)
+class SendResultAction:
+    request_id: int
+    segment_index: int
+    confirmed_ids: tuple[int, ...]
+    path_generation: int
+
+
+@dataclass(frozen=True)
+class BufferedVerificationResult:
+    job: VerificationJob
+    result: Any
 
 
 @dataclass
@@ -241,3 +256,64 @@ class AsyncVerificationCoordinator:
 
     def job(self, job_id: int) -> VerificationJob:
         return self._jobs[job_id]
+
+    def request(self, request_id: int) -> AsyncRequestState:
+        return self.requests[request_id]
+
+    def complete(
+        self,
+        job_id: int,
+        result: Any,
+    ) -> list[SendResultAction]:
+        job = self._jobs[job_id]
+        request = self.requests[job.request_id]
+        if job.path_generation != request.path_generation:
+            raise ValueError("verification result has stale path generation")
+        expected_dependency: list[int] = []
+        for index in range(
+            request.current_segment_index,
+            job.segment_index,
+        ):
+            segment = request.segments.get(index)
+            if segment is None:
+                raise ValueError(f"missing dependency segment: {index}")
+            expected_dependency.extend(segment.draft_ids)
+        if tuple(expected_dependency) != job.dependency_fingerprint:
+            raise ValueError("verification dependency fingerprint mismatch")
+        if job.segment_index in request.completed_results:
+            raise ValueError(
+                f"duplicate verification result for segment: {job.segment_index}"
+            )
+        completed_job = replace(job, status=JobStatus.COMPLETED)
+        self._jobs[job_id] = completed_job
+        self._waiting_job_ids = [
+            waiting_id
+            for waiting_id in self._waiting_job_ids
+            if waiting_id != job_id
+        ]
+        request.completed_results[job.segment_index] = BufferedVerificationResult(
+            job=completed_job,
+            result=result,
+        )
+        return self._drain_completed_results(request)
+
+    def _drain_completed_results(
+        self,
+        request: AsyncRequestState,
+    ) -> list[SendResultAction]:
+        actions: list[SendResultAction] = []
+        while request.current_segment_index in request.completed_results:
+            segment_index = request.current_segment_index
+            completed = request.completed_results.pop(segment_index)
+            confirmed_ids = tuple(completed.result.committed_tokens)
+            request.server_confirmed_ids.extend(confirmed_ids)
+            actions.append(
+                SendResultAction(
+                    request_id=request.request_id,
+                    segment_index=segment_index,
+                    confirmed_ids=confirmed_ids,
+                    path_generation=request.path_generation,
+                )
+            )
+            request.current_segment_index += 1
+        return actions
