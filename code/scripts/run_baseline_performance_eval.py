@@ -349,6 +349,11 @@ def prepare_matrix_inputs(
         config["simulation"]["seed"] = seed
         validate_config(config)
         config_output = output_root / "_configs" / f"{SCENARIO}_seed_{seed}.yaml"
+        config_output.parent.mkdir(parents=True, exist_ok=True)
+        (output_root / SCENARIO / str(seed) / "_raw").mkdir(
+            parents=True,
+            exist_ok=True,
+        )
         _write_yaml(config_output, config)
         audit = audit_experiment_config(
             config,

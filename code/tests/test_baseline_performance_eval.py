@@ -14,6 +14,7 @@ from scripts.run_baseline_performance_eval import (
     build_resource_fingerprint,
     load_shared_trace,
     materialize_shared_trace,
+    prepare_matrix_inputs,
     run_matrix_cells,
 )
 from scripts.baseline_trace import (
@@ -258,6 +259,48 @@ def test_resource_fingerprint_ignores_runtime_event_order() -> None:
     }
     assert "transition_times" not in first
     assert "network_events" not in first
+
+
+def test_prepare_matrix_inputs_creates_provenance_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_runner = SimpleNamespace(prompt_token_count=lambda prompt: len(prompt))
+    workload = [
+        WorkloadItem(
+            prompt_id=str(index),
+            prompt="x",
+            prompt_token_count=1,
+            category="qa",
+            category_group="QA",
+        )
+        for index in range(80)
+    ]
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.build_model_runner",
+        lambda *args, **kwargs: fake_runner,
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.audit_experiment_config",
+        lambda *args, **kwargs: {"schema_version": 1},
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.load_workload",
+        lambda *args, **kwargs: workload,
+    )
+
+    prepared = prepare_matrix_inputs(
+        root=tmp_path,
+        config_path="configs/default.yaml",
+        dataset_path="unused.jsonl",
+    )
+
+    assert set(prepared) == set(SEEDS)
+    assert all(config_path.is_file() for config_path, _ in prepared.values())
+    assert all(trace_path.is_file() for _, trace_path in prepared.values())
+    assert all(
+        (tmp_path / SCENARIO / str(seed) / "_raw").is_dir() for seed in SEEDS
+    )
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
