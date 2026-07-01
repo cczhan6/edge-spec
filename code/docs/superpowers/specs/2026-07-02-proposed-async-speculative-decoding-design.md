@@ -80,7 +80,7 @@ maintains:
 - one global waiting set, not per-lane queues;
 - `M` identical `VerificationChannelState` records containing only channel
   identity, active job, busy-until time, and accounting;
-- one `AsyncRequestState` per request, containing the confirmed target prefix,
+- one `AsyncRequestState` per request, containing `server_confirmed_ids`,
   current segment index `k`, ordered segment records, completed-result buffer,
   path generation, and terminal flag; and
 - immutable `VerificationJob` records containing request/segment identity,
@@ -197,17 +197,36 @@ For each committed segment:
 5. stop immediately when committed output reaches the requested length or
    contains target EOS, then invalidate every remaining job and segment.
 
-The coordinator advances the logical server-confirmed prefix at this point.
-Existing downlink delay remains user-visible: newly committed tokens are sent
-as one ordered result action, and `Request.generated_ids` plus token timestamps
+The coordinator advances its internal `server_confirmed_ids` at this point.
+This is distinct from the device-visible `Request.generated_ids`. Existing
+downlink delay remains user-visible: newly confirmed tokens are sent as one
+ordered result action, and `Request.generated_ids` plus token timestamps
 advance only when that result arrives at the device. Result-arrival events for
-one request must retain commit order. Device drafting decisions that require a
-new confirmed prefix are re-evaluated after that ordered arrival.
+one request must retain confirmation order. A correction, bonus, or EOS in
+`server_confirmed_ids` cannot be used as a device drafting prefix before its
+ordered result-arrival; when drafting requires that new prefix, the device
+waits for the corresponding arrival event.
 
 If an invalidated job is waiting or completed, discard it immediately. If it
 is active, mark it invalid, let its scheduled completion release the channel,
 record wasted verification time, and do not expose its result to commitment or
-EWMA updates.
+the accepted-length EWMA. Its completion still updates the `mu_suc` service
+estimator.
+
+When `server_confirmed_ids` reaches the requested length or EOS, immediately
+mark the request terminal for scheduling. It cannot create, transmit, enqueue,
+or dispatch more work, and its waiting jobs and buffered results are removed
+immediately. Any local draft or in-transit segment is invalidated; a draft
+completion cannot start an uplink, and an already scheduled packet-arrival is
+discarded without enqueueing. The request finish time is set when the ordered final result
+arrives and the device-visible `Request.generated_ids` reaches that same
+output boundary; request latency ends there. Already active invalidated jobs
+remain non-preemptive: their completion events still run, release their
+channels, count as wasted verification time, and may trigger dispatch for
+other non-terminal requests. The simulation event loop and resource
+accounting continue until every active verification job has completed;
+completion of all device-visible request outputs is not an event-loop
+termination condition.
 
 ## Configuration
 
@@ -261,18 +280,27 @@ candidates = {g in Gamma |
               g <= gamma_cap and existing_unconfirmed + g <= L_max_ver}
 ```
 
-Before `mu_suc` has `mu_suc_min_completions` valid samples, choose
+Before `mu_suc` has `mu_suc_min_completions` observed dispatched-job
+completions, choose
 `min(gamma_start, largest feasible candidate)`; if no candidate exists, pause.
 After warm-up, let `service_interval = 1 / mu_suc`. Among candidates with
 `T_ready <= service_interval`, choose the one with largest `T_ready`, breaking
 ties toward larger gamma. If none is on time, choose the smallest `T_ready`,
 breaking ties toward smaller gamma.
 
-The rate observation counts valid successor verification completions in the
-sliding window and divides by the integral of the number of requests having at
-least one unfinished successor. The EWMA is updated only when that exposure is
-positive; otherwise it is held. Units are completions per millisecond per
-active request. For the selected gamma,
+The rate observation counts every successor verification job that actually
+occupied a channel and reached its completion event in the sliding window.
+This includes both normally valid completions and jobs that became invalid
+after starting but completed non-preemptively. A waiting job canceled before
+dispatch does not count. This makes `mu_suc` a measure of server successor-job
+service capacity, independent of whether completed work remains useful. The
+count is divided by the integral of the number of requests having at least one
+unfinished successor. The EWMA is updated only when that exposure is positive;
+otherwise it is held. Units are completions per millisecond per active request.
+An active successor invalidated after dispatch remains unfinished, and its
+request remains in this exposure integral until that job completes.
+The accepted-length EWMA remains separate and is updated only from segments
+committed on the final valid path. For the selected gamma,
 
 ```text
 d_star = max(1, ceil(mu_suc * T_ready(selected_gamma)))
@@ -305,9 +333,12 @@ Stage A is accepted only when all of the following hold:
 7. Every case compares the complete per-request token-id sequence with
    `target_only`; randomized deterministic-runner cases cover multiple
    requests, channels, gammas, and network delays.
-8. At request finish there is no committable result or live proposed state;
-   active invalidated work may only remain as already scheduled cleanup events
-   and cannot alter output or statistics after completion.
+8. Output length or EOS immediately makes the request terminal for scheduling;
+   its latency ends when the ordered final downlink arrives. No new work starts,
+   waiting and buffered work is removed, and active invalidated jobs finish
+   only to release resources and update service/waste accounting. The
+   simulation drains all such completions instead of stopping when all request
+   outputs are complete.
 9. Trace/accounting distinguishes useful and invalidated verification time,
    records channel occupancy and queue priority inputs, and all existing
    metric writers can serialize the result without special-casing baselines.
@@ -330,10 +361,10 @@ selection, EWMA update eligibility, normalized-rate units, and the exact
   insufficient to prove validity after predecessor decisions. Jobs therefore
   retain dependency identity and overlap evidence; otherwise they are
   re-created rather than reused.
-- **Commit location versus result transport:** the method says results enter a
-  request buffer but does not distinguish server confirmation from device
-  visibility. Logical ordering is resolved at the server; existing downlink
-  events determine user-visible token times and device controller updates.
+- **Commit location versus result transport:** the coordinator owns
+  `server_confirmed_ids`, while `Request.generated_ids` is device-visible.
+  Logical ordering is resolved at the server, but correction, bonus, and EOS
+  affect a new drafting prefix only after ordered downlink arrival.
 - **Bonus and EOS:** bonus reuse is allowed only for the immediate successor's
   first unconsumed token and only when cached dependencies still match. EOS in
   any committed role terminates the request and invalidates descendants.
@@ -343,9 +374,10 @@ selection, EWMA update eligibility, normalized-rate units, and the exact
 - **Ready time:** it is start-to-queue-eligibility and includes realized
   drafting and uplink behavior. Downlink is excluded because it does not make
   a verification job ready.
-- **`mu_suc` completion eligibility:** only completed successor jobs valid at
-  completion count; current jobs and invalidated work do not. Active-request
-  exposure uses the same unfinished-successor definition as depth.
+- **`mu_suc` completion eligibility:** every dispatched successor job reaching
+  completion counts, including work invalidated while active; a canceled
+  waiting job does not. Current jobs do not count. Accepted-length observations
+  still require final-path commitment.
 - **Cold start and tie-breaking:** the method leaves stable-observation and
   equal-time choices open. This design makes both configurable/deterministic
   and uses `gamma_start` until the minimum valid sample count is reached.
