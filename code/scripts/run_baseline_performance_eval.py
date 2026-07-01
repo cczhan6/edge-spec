@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
@@ -339,40 +340,75 @@ def prepare_matrix_inputs(
     output_root = Path(root)
     output_root.mkdir(parents=True, exist_ok=True)
     first_config = load_config(config_path, SCENARIO)
-    token_counter = build_model_runner(
+    model_runner = build_model_runner(
         first_config,
         use_fake_model_runner=False,
-    ).prompt_token_count
+    )
+    token_counter = model_runner.prompt_token_count
     prepared = {}
-    for seed in SEEDS:
-        config = load_config(config_path, SCENARIO)
-        config["simulation"]["seed"] = seed
-        validate_config(config)
-        config_output = output_root / "_configs" / f"{SCENARIO}_seed_{seed}.yaml"
-        config_output.parent.mkdir(parents=True, exist_ok=True)
-        (output_root / SCENARIO / str(seed) / "_raw").mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-        _write_yaml(config_output, config)
-        audit = audit_experiment_config(
-            config,
-            scenario=SCENARIO,
-            methods=METHODS,
-            use_fake_model_runner=False,
-            repo_root=Path(__file__).resolve().parents[1],
-        )
-        write_resolved_config(config_output.with_suffix(".audit.json"), audit)
-        workload = load_workload(
-            dataset_path,
-            int(config["simulation"]["num_requests"]),
-            seed,
-            token_counter,
-        )
-        trace_output = output_root / "_workloads" / f"{SCENARIO}_seed_{seed}.jsonl"
-        materialize_shared_trace(config, workload, trace_output)
-        prepared[seed] = (config_output, trace_output)
+    try:
+        for seed in SEEDS:
+            config = load_config(config_path, SCENARIO)
+            config["simulation"]["seed"] = seed
+            validate_config(config)
+            config_output = output_root / "_configs" / f"{SCENARIO}_seed_{seed}.yaml"
+            config_output.parent.mkdir(parents=True, exist_ok=True)
+            (output_root / SCENARIO / str(seed) / "_raw").mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            _write_yaml(config_output, config)
+            audit = audit_experiment_config(
+                config,
+                scenario=SCENARIO,
+                methods=METHODS,
+                use_fake_model_runner=False,
+                repo_root=Path(__file__).resolve().parents[1],
+            )
+            write_resolved_config(config_output.with_suffix(".audit.json"), audit)
+            workload = load_workload(
+                dataset_path,
+                int(config["simulation"]["num_requests"]),
+                seed,
+                token_counter,
+            )
+            trace_output = (
+                output_root / "_workloads" / f"{SCENARIO}_seed_{seed}.jsonl"
+            )
+            materialize_shared_trace(config, workload, trace_output)
+            prepared[seed] = (config_output, trace_output)
+    finally:
+        torch_module = getattr(model_runner, "torch", None)
+        used_cleanup_interface = False
+        try:
+            used_cleanup_interface = _use_model_runner_cleanup(model_runner)
+        finally:
+            del token_counter
+            del model_runner
+            if not used_cleanup_interface:
+                gc.collect()
+                _empty_cuda_cache(torch_module)
     return prepared
+
+
+def _use_model_runner_cleanup(model_runner: ModelRunner) -> bool:
+    for name in ("close", "cleanup", "shutdown", "release"):
+        cleanup = getattr(model_runner, name, None)
+        if callable(cleanup):
+            cleanup()
+            return True
+    return False
+
+
+def _empty_cuda_cache(torch_module: Any | None) -> None:
+    if torch_module is None:
+        try:
+            import torch as torch_module
+        except ImportError:
+            return
+    cuda = getattr(torch_module, "cuda", None)
+    if cuda is not None and cuda.is_available():
+        cuda.empty_cache()
 
 
 def run_formal_matrix(

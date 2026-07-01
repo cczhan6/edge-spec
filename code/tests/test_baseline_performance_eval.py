@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import gc
 import json
 import math
+import weakref
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ from scripts.run_baseline_performance_eval import (
     load_shared_trace,
     materialize_shared_trace,
     prepare_matrix_inputs,
+    run_cell,
     run_matrix_cells,
 )
 from scripts.baseline_trace import (
@@ -217,6 +220,63 @@ def test_all_methods_consume_shared_arrivals_without_resampling(
     assert all(rows == observed[0] for rows in observed[1:])
 
 
+def test_run_cell_constructs_shared_trace_simulator_with_one_model_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = {"simulation": {"seed": 3, "num_devices": 1}}
+    shared = [object()]
+    model_runner = object()
+    result = object()
+    constructor_calls = []
+
+    class RecordingSimulator:
+        def __init__(self, *args, **kwargs) -> None:
+            constructor_calls.append((args, kwargs))
+
+        def run(self):
+            return result
+
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.load_config",
+        lambda *args, **kwargs: config,
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.load_shared_trace",
+        lambda *args, **kwargs: shared,
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.build_model_runner",
+        lambda *args, **kwargs: model_runner,
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.SharedTraceSimulator",
+        RecordingSimulator,
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.summarize",
+        lambda *args, **kwargs: ({}, {}),
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.write_trace_bundle",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.build_resource_fingerprint",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval._sha256_file",
+        lambda *args, **kwargs: "trace-sha256",
+    )
+
+    run_cell("config.yaml", "trace.jsonl", "target_only", tmp_path)
+
+    assert constructor_calls == [
+        ((config, model_runner, shared, SCENARIO, "target_only"), {})
+    ]
+
+
 def test_run_matrix_cells_continues_after_process_failure(tmp_path: Path) -> None:
     calls = []
 
@@ -301,6 +361,96 @@ def test_prepare_matrix_inputs_creates_provenance_directories(
     assert all(
         (tmp_path / SCENARIO / str(seed) / "_raw").is_dir() for seed in SEEDS
     )
+
+
+def test_prepare_matrix_inputs_uses_runner_cleanup_and_releases_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_calls = []
+    runner_references = []
+
+    class RunnerWithCleanup:
+        def prompt_token_count(self, prompt: str) -> int:
+            return len(prompt)
+
+        def cleanup(self) -> None:
+            cleanup_calls.append("cleanup")
+
+    def build_runner(*args, **kwargs):
+        runner = RunnerWithCleanup()
+        runner_references.append(weakref.ref(runner))
+        return runner
+
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.build_model_runner",
+        build_runner,
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.audit_experiment_config",
+        lambda *args, **kwargs: {"schema_version": 1},
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.load_workload",
+        lambda *args, **kwargs: _workload(80),
+    )
+
+    prepare_matrix_inputs(
+        root=tmp_path,
+        config_path="configs/default.yaml",
+        dataset_path="unused.jsonl",
+    )
+
+    assert cleanup_calls == ["cleanup"]
+    assert runner_references[0]() is None
+
+
+def test_prepare_matrix_inputs_fallback_clears_cuda_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    empty_cache_calls = []
+    collect_calls = []
+    runner_references = []
+    fake_cuda = SimpleNamespace(
+        is_available=lambda: True,
+        empty_cache=lambda: empty_cache_calls.append("empty"),
+    )
+
+    class RunnerWithoutCleanup:
+        torch = SimpleNamespace(cuda=fake_cuda)
+
+        def prompt_token_count(self, prompt: str) -> int:
+            return len(prompt)
+
+    def build_runner(*args, **kwargs):
+        runner = RunnerWithoutCleanup()
+        runner_references.append(weakref.ref(runner))
+        return runner
+
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.build_model_runner",
+        build_runner,
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.audit_experiment_config",
+        lambda *args, **kwargs: {"schema_version": 1},
+    )
+    monkeypatch.setattr(
+        "scripts.run_baseline_performance_eval.load_workload",
+        lambda *args, **kwargs: _workload(80),
+    )
+    monkeypatch.setattr(gc, "collect", lambda: collect_calls.append("collect"))
+
+    prepare_matrix_inputs(
+        root=tmp_path,
+        config_path="configs/default.yaml",
+        dataset_path="unused.jsonl",
+    )
+
+    assert collect_calls == ["collect"]
+    assert empty_cache_calls == ["empty"]
+    assert runner_references[0]() is None
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
