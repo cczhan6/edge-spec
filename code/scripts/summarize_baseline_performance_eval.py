@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
+import json
+import math
 import statistics
+import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from scripts.baseline_trace import (
+    _check_event_monotonicity,
+    _check_no_pending_state,
+    _check_resource_overlap,
+    _committed_tokens,
+)
 from src.metrics import write_csv
 
 
@@ -55,6 +67,18 @@ SUMMARY_FIELDS = (
         for field in (f"{metric}_mean", f"{metric}_std")
     ),
 )
+REQUIRED_CELL_FILES = (
+    "stdout.log",
+    "run_status.json",
+    "resolved_config.json",
+    "metrics.csv",
+    "request_trace.csv",
+    "event_trace.csv",
+    "token_trace.csv",
+    "resource_timeline.csv",
+    "batch_trace.csv",
+    "system_metrics.csv",
+)
 
 
 def initialize_runs_csv(root: str | Path) -> Path:
@@ -99,6 +123,236 @@ def aggregate_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return summaries
 
 
+def summarize_results(root: str | Path) -> list[str]:
+    output_root = Path(root)
+    rows: list[dict[str, Any]] = []
+    failures: list[str] = []
+    loaded: dict[tuple[int, str], dict[str, Any]] = {}
+    fingerprints: dict[int, dict[str, Any]] = {}
+    row_failures: dict[tuple[int, str], list[str]] = defaultdict(list)
+
+    for seed in SEEDS:
+        trace_path = (
+            output_root / "_workloads" / f"{SCENARIO}_seed_{seed}.jsonl"
+        )
+        shared_rows = _read_jsonl(trace_path) if trace_path.is_file() else []
+        for method in METHODS:
+            key = (seed, method)
+            row: dict[str, Any] = {field: "" for field in RUN_FIELDS}
+            row.update(
+                scenario=SCENARIO,
+                seed=seed,
+                method=method,
+                metric_scope=METRIC_SCOPE,
+                success=False,
+            )
+            directory = output_root / SCENARIO / str(seed) / method
+            missing = [
+                name for name in REQUIRED_CELL_FILES if not (directory / name).is_file()
+            ]
+            if not trace_path.is_file():
+                missing.append(str(trace_path.relative_to(output_root)))
+            if missing:
+                row_failures[key].append("missing files: " + ", ".join(missing))
+                rows.append(row)
+                continue
+            try:
+                data = _load_cell(directory)
+                loaded[key] = data
+                local = _validate_cell(
+                    data,
+                    shared_rows=shared_rows,
+                    shared_trace_path=trace_path,
+                    seed=seed,
+                    method=method,
+                )
+                row_failures[key].extend(local)
+                metric = data["metrics"][0]
+                row["num_requests"] = len(data["requests"])
+                row["committed_tokens"] = _sum_committed(data["tokens"])
+                for field in PERFORMANCE_FIELDS:
+                    row[field] = metric.get(field, "")
+                fingerprint = data["status"].get("resource_fingerprint")
+                if isinstance(fingerprint, dict):
+                    reference = fingerprints.setdefault(seed, fingerprint)
+                    if fingerprint != reference:
+                        row_failures[key].append(
+                            "resource fingerprint differs across methods"
+                        )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                row_failures[key].append(f"invalid trace bundle: {exc}")
+            rows.append(row)
+
+    by_identity = {(int(row["seed"]), str(row["method"])): row for row in rows}
+    for seed in SEEDS:
+        target = loaded.get((seed, "target_only"))
+        if target is None:
+            continue
+        expected_tokens = _committed_tokens(target["tokens"])
+        for method in METHODS:
+            data = loaded.get((seed, method))
+            if data is None:
+                continue
+            if _committed_tokens(data["tokens"]) != expected_tokens:
+                row_failures[(seed, method)].append(
+                    "committed token trace differs from target_only"
+                )
+
+    for key, row in by_identity.items():
+        messages = list(dict.fromkeys(row_failures[key]))
+        row["success"] = not messages
+        row["failure_reason"] = "; ".join(messages)
+        failures.extend(
+            f"{SCENARIO}/{key[0]}/{key[1]}: {message}" for message in messages
+        )
+
+    ordered_rows = [by_identity[(seed, method)] for seed in SEEDS for method in METHODS]
+    write_csv(output_root / "runs.csv", ordered_rows, list(RUN_FIELDS))
+    write_csv(
+        output_root / "summary.csv",
+        aggregate_rows(ordered_rows),
+        list(SUMMARY_FIELDS),
+    )
+    return failures
+
+
+def _load_cell(directory: Path) -> dict[str, Any]:
+    return {
+        "status": _read_json(directory / "run_status.json"),
+        "resolved": _read_json(directory / "resolved_config.json"),
+        "metrics": _read_csv(directory / "metrics.csv"),
+        "requests": _read_csv(directory / "request_trace.csv"),
+        "events": _read_csv(directory / "event_trace.csv"),
+        "tokens": _read_csv(directory / "token_trace.csv"),
+        "resources": _read_csv(directory / "resource_timeline.csv"),
+    }
+
+
+def _validate_cell(
+    data: dict[str, Any],
+    *,
+    shared_rows: list[dict[str, Any]],
+    shared_trace_path: Path,
+    seed: int,
+    method: str,
+) -> list[str]:
+    failures = []
+    status = data["status"]
+    resolved = data["resolved"]
+    config = resolved.get("config", resolved)
+    if not _as_bool(status.get("success")):
+        failures.append(
+            "worker failed: " + str(status.get("failure_reason") or "unknown failure")
+        )
+    if int(status.get("return_code", -1)) != 0:
+        failures.append(f"worker return code is {status.get('return_code')}")
+    if status.get("scenario") != SCENARIO or status.get("method") != method:
+        failures.append("run status scenario/method mismatch")
+    if int(status.get("seed", -1)) != seed:
+        failures.append("run status seed mismatch")
+    if resolved.get("scenario") != SCENARIO or resolved.get("method") != method:
+        failures.append("resolved config scenario/method mismatch")
+
+    simulation = config["simulation"]
+    if int(simulation["seed"]) != seed:
+        failures.append("resolved seed mismatch")
+    if int(simulation["num_requests"]) != 80:
+        failures.append("resolved num_requests is not 80")
+    if config.get("dynamic_edge_compute") != {
+        "enabled": True,
+        "resample_every_completed_requests": 5,
+    }:
+        failures.append("dynamic edge compute contract mismatch")
+    templates = config["device_pools"]["heterogeneous"]["templates"]
+    populated = {name: values for name, values in templates.items() if int(values["count"]) > 0}
+    if set(populated) != {"low_end", "mid_end", "high_end"}:
+        failures.append("heterogeneous device composition mismatch")
+    if any(float(values.get("block_probability", -1)) != 0.2 for values in populated.values()):
+        failures.append("device block_probability is not uniformly 0.2")
+    target = config.get("target_latency", {})
+    if target.get("mode") != "profile" or target.get("metric") != "p50_ms":
+        failures.append("target latency profile mode/metric mismatch")
+    if target.get("profile_path") != (
+        "outputs/profiling/target_verification_latency_full_merged.csv"
+    ):
+        failures.append("target latency profile path mismatch")
+
+    expected_hash = hashlib.sha256(shared_trace_path.read_bytes()).hexdigest()
+    if status.get("shared_trace_sha256") != expected_hash:
+        failures.append("shared trace SHA-256 mismatch")
+    recorded_path = status.get("shared_trace_path")
+    if not recorded_path or Path(recorded_path).resolve() != shared_trace_path.resolve():
+        failures.append("shared trace path mismatch")
+    fingerprint = status.get("resource_fingerprint")
+    if not isinstance(fingerprint, dict):
+        failures.append("resource fingerprint is missing")
+    else:
+        from scripts.run_baseline_performance_eval import build_resource_fingerprint
+
+        if fingerprint != build_resource_fingerprint(config):
+            failures.append("resource fingerprint does not match resolved config")
+
+    metrics = data["metrics"]
+    if len(metrics) != 1:
+        failures.append(f"metrics.csv has {len(metrics)} rows, expected 1")
+    else:
+        for field in PERFORMANCE_FIELDS:
+            try:
+                value = float(metrics[0][field])
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError("must be finite and non-negative")
+            except (KeyError, TypeError, ValueError) as exc:
+                failures.append(f"metric {field} is invalid: {exc}")
+
+    requests = data["requests"]
+    if len(requests) != 80:
+        failures.append(f"request count is {len(requests)}, expected 80")
+    if len(shared_rows) != 80:
+        failures.append(f"shared trace has {len(shared_rows)} rows, expected 80")
+    for expected, observed in zip(shared_rows, requests):
+        request_id = str(expected["request_id"])
+        if observed.get("request_id") != request_id:
+            failures.append(f"request {request_id} ID mismatch")
+            continue
+        for field in ("prompt_id", "output_len"):
+            if str(observed.get(field)) != str(expected[field]):
+                failures.append(f"request {request_id} {field} mismatch")
+        for field in ("arrival_time_ms", "decode_ready_time_ms"):
+            if float(observed.get(field, "nan")) != float(expected[field]):
+                failures.append(f"request {request_id} {field} mismatch")
+        if observed.get("status") != "finished":
+            failures.append(f"request {request_id} is not finished")
+        if int(observed.get("generated_tokens", -1)) != int(expected["output_len"]):
+            failures.append(f"request {request_id} generated token count mismatch")
+    failures.extend(_check_no_pending_state(method, requests))
+    failures.extend(_check_event_monotonicity(method, data["events"]))
+    failures.extend(_check_resource_overlap(method, data["resources"]))
+    return failures
+
+
+def _sum_committed(rows: list[dict[str, str]]) -> int:
+    return sum(
+        int(row.get("count") or 1)
+        for row in rows
+        if row.get("token_type") == "committed"
+    )
+
+
+def _read_csv(path: str | Path) -> list[dict[str, str]]:
+    with Path(path).open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _read_json(path: str | Path) -> dict[str, Any]:
+    with Path(path).open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    with Path(path).open(encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
 def _as_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -115,7 +369,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    initialize_runs_csv(args.root)
+    failures = summarize_results(args.root)
+    if failures:
+        print("baseline performance evaluation validation failed:", file=sys.stderr)
+        for failure in failures:
+            print(f"- {failure}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

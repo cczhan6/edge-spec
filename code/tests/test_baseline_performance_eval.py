@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -15,14 +16,24 @@ from scripts.run_baseline_performance_eval import (
     materialize_shared_trace,
     run_matrix_cells,
 )
+from scripts.baseline_trace import (
+    BATCH_TRACE_FIELDS,
+    EVENT_TRACE_FIELDS,
+    REQUEST_TRACE_FIELDS,
+    RESOURCE_TIMELINE_FIELDS,
+    TOKEN_TRACE_FIELDS,
+)
 from scripts.summarize_baseline_performance_eval import (
     METHODS,
     PERFORMANCE_FIELDS,
+    SCENARIO,
     SEEDS,
     aggregate_rows,
     initialize_runs_csv,
+    summarize_results,
 )
 from src.config import load_config
+from src.metrics import MAIN_FIELDS, SYSTEM_FIELDS, write_csv
 from src.workload import WorkloadItem
 from tests.common import small_config
 
@@ -247,3 +258,185 @@ def test_resource_fingerprint_ignores_runtime_event_order() -> None:
     }
     assert "transition_times" not in first
     assert "network_events" not in first
+
+
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _write_complete_synthetic_matrix(
+    root: Path,
+    *,
+    blank_device_ids_for: set[str] | None = None,
+) -> None:
+    blank = blank_device_ids_for or set()
+    initialize_runs_csv(root)
+    for seed in SEEDS:
+        config = load_config("configs/default.yaml", SCENARIO)
+        config["simulation"]["seed"] = seed
+        config["simulation"]["output_len_choices"] = [2]
+        workload = [
+            WorkloadItem(
+                prompt_id=f"prompt-{index}",
+                prompt=f"prompt text {index}",
+                prompt_token_count=3,
+                category="qa",
+                category_group="QA",
+            )
+            for index in range(80)
+        ]
+        trace_path = root / "_workloads" / f"{SCENARIO}_seed_{seed}.jsonl"
+        trace_hash = materialize_shared_trace(config, workload, trace_path)
+        shared = load_shared_trace(trace_path, config)
+        fingerprint = build_resource_fingerprint(config)
+        for method in METHODS:
+            directory = root / SCENARIO / str(seed) / method
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "run_status.json").write_text(
+                json.dumps(
+                    {
+                        "scenario": SCENARIO,
+                        "seed": seed,
+                        "method": method,
+                        "success": True,
+                        "return_code": 0,
+                        "failure_reason": "",
+                        "shared_trace_path": str(trace_path),
+                        "shared_trace_sha256": trace_hash,
+                        "resource_fingerprint": fingerprint,
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            (directory / "resolved_config.json").write_text(
+                json.dumps(
+                    {"method": method, "scenario": SCENARIO, "config": config}
+                ),
+                encoding="utf-8",
+            )
+            metric = {field: 1.0 for field in MAIN_FIELDS}
+            metric.update(method=method, scenario=SCENARIO, num_requests=80)
+            write_csv(directory / "metrics.csv", [metric], MAIN_FIELDS)
+            requests = []
+            tokens = []
+            for row in shared:
+                requests.append(
+                    {
+                        "method": method,
+                        "scenario": SCENARIO,
+                        "request_id": row.request_id,
+                        "device_id": "" if method in blank else row.device_id,
+                        "prompt_id": row.prompt_id,
+                        "arrival_time_ms": row.arrival_time_ms,
+                        "decode_ready_time_ms": row.decode_ready_time_ms,
+                        "finish_time_ms": row.arrival_time_ms + 1.0,
+                        "latency_ms": 1.0,
+                        "output_len": row.output_len,
+                        "generated_tokens": row.output_len,
+                        "generated_ids": list(range(row.output_len)),
+                        "status": "finished",
+                        "in_flight_segment_count": 0,
+                        "pending_segment_count": 0,
+                        "completed_result_count": 0,
+                        "draft_queued": False,
+                        "proactive_pending_count": 0,
+                    }
+                )
+                tokens.extend(
+                    {
+                        "method": method,
+                        "scenario": SCENARIO,
+                        "token_type": "committed",
+                        "request_id": row.request_id,
+                        "device_id": row.device_id,
+                        "position": position,
+                        "token_index": position,
+                        "token_id": position,
+                        "commit_time_ms": row.arrival_time_ms + position + 1.0,
+                        "count": 1,
+                        "status": "finished",
+                        "source_event": "final_output",
+                    }
+                    for position in range(row.output_len)
+                )
+            write_csv(
+                directory / "request_trace.csv",
+                requests,
+                REQUEST_TRACE_FIELDS,
+            )
+            write_csv(directory / "event_trace.csv", [], EVENT_TRACE_FIELDS)
+            write_csv(directory / "token_trace.csv", tokens, TOKEN_TRACE_FIELDS)
+            write_csv(
+                directory / "resource_timeline.csv",
+                [],
+                RESOURCE_TIMELINE_FIELDS,
+            )
+            write_csv(directory / "batch_trace.csv", [], BATCH_TRACE_FIELDS)
+            system = {field: 0.0 for field in SYSTEM_FIELDS}
+            system.update(method=method, scenario=SCENARIO)
+            write_csv(directory / "system_metrics.csv", [system], SYSTEM_FIELDS)
+            (directory / "stdout.log").write_text(
+                "synthetic success\n",
+                encoding="utf-8",
+            )
+
+
+def _replace_one_committed_token(path: Path) -> None:
+    rows = _read_csv(path)
+    rows[0]["token_id"] = str(int(rows[0]["token_id"]) + 1000)
+    write_csv(path, rows, TOKEN_TRACE_FIELDS)
+
+
+def test_missing_trace_retains_complete_matrix_and_fails(tmp_path: Path) -> None:
+    initialize_runs_csv(tmp_path)
+    failures = summarize_results(tmp_path)
+    rows = _read_csv(tmp_path / "runs.csv")
+
+    assert len(rows) == 30
+    assert all(row["success"] == "False" for row in rows)
+    assert any("missing" in row["failure_reason"] for row in rows)
+    assert failures
+
+
+def test_missing_output_device_id_does_not_fail_input_mapping(
+    tmp_path: Path,
+) -> None:
+    _write_complete_synthetic_matrix(
+        tmp_path,
+        blank_device_ids_for={
+            "target_only",
+            "server_only_linear",
+            "server_only_tree",
+        },
+    )
+
+    failures = summarize_results(tmp_path)
+
+    assert failures == []
+
+
+def test_committed_token_mismatch_marks_cell_failed(tmp_path: Path) -> None:
+    _write_complete_synthetic_matrix(tmp_path)
+    _replace_one_committed_token(
+        tmp_path
+        / SCENARIO
+        / "0"
+        / "specedge_linear"
+        / "token_trace.csv"
+    )
+
+    failures = summarize_results(tmp_path)
+    rows = _read_csv(tmp_path / "runs.csv")
+    failed = next(
+        row
+        for row in rows
+        if row["seed"] == "0" and row["method"] == "specedge_linear"
+    )
+
+    assert failed["success"] == "False"
+    assert "committed token trace differs from target_only" in failed[
+        "failure_reason"
+    ]
+    assert failures
