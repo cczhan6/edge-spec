@@ -11,6 +11,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+import yaml
+
 from scripts.baseline_trace import (
     _check_event_monotonicity,
     _check_no_pending_state,
@@ -18,6 +20,7 @@ from scripts.baseline_trace import (
     _committed_tokens,
 )
 from src.metrics import write_csv
+from src.config import load_config
 
 
 SCENARIO = "dynamic_heterogeneous"
@@ -124,6 +127,8 @@ def aggregate_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def summarize_results(root: str | Path) -> list[str]:
+    from scripts.run_baseline_performance_eval import build_resource_fingerprint
+
     output_root = Path(root)
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -132,6 +137,17 @@ def summarize_results(root: str | Path) -> list[str]:
     row_failures: dict[tuple[int, str], list[str]] = defaultdict(list)
 
     for seed in SEEDS:
+        config_path = (
+            output_root / "_configs" / f"{SCENARIO}_seed_{seed}.yaml"
+        )
+        expected_fingerprint: dict[str, Any] | None = None
+        seed_config_failure = ""
+        try:
+            expected_fingerprint = build_resource_fingerprint(
+                load_config(config_path)
+            )
+        except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+            seed_config_failure = f"seed config cannot be loaded: {exc}"
         trace_path = (
             output_root / "_workloads" / f"{SCENARIO}_seed_{seed}.jsonl"
         )
@@ -146,6 +162,8 @@ def summarize_results(root: str | Path) -> list[str]:
                 metric_scope=METRIC_SCOPE,
                 success=False,
             )
+            if seed_config_failure:
+                row_failures[key].append(seed_config_failure)
             directory = output_root / SCENARIO / str(seed) / method
             missing = [
                 name for name in REQUIRED_CELL_FILES if not (directory / name).is_file()
@@ -165,6 +183,7 @@ def summarize_results(root: str | Path) -> list[str]:
                     shared_trace_path=trace_path,
                     seed=seed,
                     method=method,
+                    expected_fingerprint=expected_fingerprint,
                 )
                 row_failures[key].extend(local)
                 metric = data["metrics"][0]
@@ -235,6 +254,7 @@ def _validate_cell(
     shared_trace_path: Path,
     seed: int,
     method: str,
+    expected_fingerprint: dict[str, Any] | None,
 ) -> list[str]:
     failures = []
     status = data["status"]
@@ -286,11 +306,8 @@ def _validate_cell(
     fingerprint = status.get("resource_fingerprint")
     if not isinstance(fingerprint, dict):
         failures.append("resource fingerprint is missing")
-    else:
-        from scripts.run_baseline_performance_eval import build_resource_fingerprint
-
-        if fingerprint != build_resource_fingerprint(config):
-            failures.append("resource fingerprint does not match resolved config")
+    elif expected_fingerprint is not None and fingerprint != expected_fingerprint:
+        failures.append("resource fingerprint does not match seed config")
 
     metrics = data["metrics"]
     if len(metrics) != 1:

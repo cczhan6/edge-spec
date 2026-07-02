@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from scripts.run_baseline_performance_eval import (
     SharedTraceSimulator,
@@ -469,6 +470,12 @@ def _write_complete_synthetic_matrix(
         config = load_config("configs/default.yaml", SCENARIO)
         config["simulation"]["seed"] = seed
         config["simulation"]["output_len_choices"] = [2]
+        config_path = root / "_configs" / f"{SCENARIO}_seed_{seed}.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False),
+            encoding="utf-8",
+        )
         workload = [
             WorkloadItem(
                 prompt_id=f"prompt-{index}",
@@ -591,6 +598,43 @@ def test_missing_trace_retains_complete_matrix_and_fails(tmp_path: Path) -> None
     assert all(row["success"] == "False" for row in rows)
     assert any("missing" in row["failure_reason"] for row in rows)
     assert failures
+
+
+def test_summarizer_uses_seed_yaml_fingerprint_not_resolved_json(
+    tmp_path: Path,
+) -> None:
+    _write_complete_synthetic_matrix(tmp_path)
+    seed = 0
+    config_path = tmp_path / "_configs" / f"{SCENARIO}_seed_{seed}.yaml"
+    seed_config = load_config(config_path)
+    cell = tmp_path / SCENARIO / str(seed) / "target_only"
+    resolved_path = cell / "resolved_config.json"
+    resolved_document = json.loads(resolved_path.read_text(encoding="utf-8"))
+    resolved_document["config"]["device_pools"]["heterogeneous"]["templates"][
+        "low_end"
+    ]["dynamic_draft_token_rate_range_tok_s"] = [999, 1000]
+    resolved_path.write_text(json.dumps(resolved_document), encoding="utf-8")
+    status = json.loads((cell / "run_status.json").read_text(encoding="utf-8"))
+    resolved = json.loads(resolved_path.read_text(encoding="utf-8"))["config"]
+
+    assert status["resource_fingerprint"] == build_resource_fingerprint(seed_config)
+    assert status["resource_fingerprint"] != build_resource_fingerprint(resolved)
+    assert summarize_results(tmp_path) == []
+
+
+def test_missing_seed_yaml_explicitly_fails_every_method(tmp_path: Path) -> None:
+    _write_complete_synthetic_matrix(tmp_path)
+    seed = 0
+    (tmp_path / "_configs" / f"{SCENARIO}_seed_{seed}.yaml").unlink()
+
+    failures = summarize_results(tmp_path)
+    rows = _read_csv(tmp_path / "runs.csv")
+    failed = [row for row in rows if row["seed"] == str(seed)]
+
+    assert len(failed) == len(METHODS)
+    assert all(row["success"] == "False" for row in failed)
+    assert all("seed config" in row["failure_reason"] for row in failed)
+    assert any("seed config" in failure for failure in failures)
 
 
 def test_missing_output_device_id_does_not_fail_input_mapping(
